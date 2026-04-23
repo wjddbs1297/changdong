@@ -159,7 +159,7 @@ function getBookings(params) {
         var rowDate = formatDateSafe(row[3]); // D열 Date
 
         if (targetDate && rowDate !== targetDate) continue;
-        if (targetUser && row[1] !== targetUser) continue;
+        if (targetUser && String(row[1]).toLowerCase() !== targetUser.toLowerCase()) continue;
 
         bookings.push({
             id: row[0],
@@ -365,7 +365,7 @@ function updateBooking(params) {
 
     // 유저 정보 조회 (Admin 체크용)
     var config = getSheetConfig();
-    var user = config.users.find(function (u) { return u.id === userId; });
+    var user = config.users.find(function (u) { return u.id.toLowerCase() === userId.toLowerCase(); });
     var isAdmin = user && user.role === 'admin';
 
     // 1. Find the booking ROW
@@ -374,7 +374,7 @@ function updateBooking(params) {
 
     for (var i = 1; i < data.length; i++) {
         if (String(data[i][0]) === bookingId) {
-            if (String(data[i][1]) !== userId) return sendResponse({ message: "Permission denied" }, false);
+            if (String(data[i][1]).toLowerCase() !== userId.toLowerCase()) return sendResponse({ message: "Permission denied" }, false);
             rowIndex = i;
             break;
         }
