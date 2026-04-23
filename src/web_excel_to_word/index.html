@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>동아리 가입신청서 자동 생성기</title>
+
+    <!-- Google Fonts & Custom CSS -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+
+    <!-- Libraries -->
+    <!-- SheetJS for Excel -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <!-- docx.js for generating Word documents from scratch -->
+    <script src="https://unpkg.com/docx@8.5.0/build/index.js"></script>
+    <!-- FileSaver for downloading the generated files -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+    <!-- JSZip to bundle multiple output files into one zip -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+</head>
+
+<body>
+    <div class="background-elements">
+        <div class="blob blob-1"></div>
+        <div class="blob blob-2"></div>
+    </div>
+
+    <div class="container glass-panel">
+        <header>
+            <div class="icon-wrap">✨</div>
+            <h1>신청서 원클릭 자동 생성기</h1>
+            <p>엑셀 파일만 올리면 완벽한 디자인의 워드 양식이 자동으로 만들어집니다.</p>
+        </header>
+
+        <main>
+            <div class="download-section">
+                <p>1️⃣ 워드 양식을 만들지 않으셔도 괜찮습니다. 아래 버튼을 눌러 지정된 <b>데이터 입력용 엑셀</b>을 다운받으세요.</p>
+                <button id="downloadSampleBtn" class="btn btn-outline" style="margin-top: 10px;">
+                    📊 데이터 입력용 엑셀(샘플) 다운로드
+                </button>
+            </div>
+
+            <div class="upload-section" style="grid-template-columns: 1fr; margin-top: 2rem;">
+                <!-- Excel Data Upload Only -->
+                <div class="upload-box" id="excelBox">
+                    <div class="box-icon">�</div>
+                    <h3>2️⃣ 데이터 입력 완료된 엑셀(.xlsx) 업로드</h3>
+                    <p class="desc">미리 빈칸 없이 작성하신 엑셀 파일을 여기에 드래그하거나 선택하세요.</p>
+                    <input type="file" id="excelFile" accept=".xlsx, .xls" class="file-input">
+                    <label for="excelFile" class="btn btn-primary" id="excelLabel">파일 선택하기</label>
+                    <div class="file-status" id="excelStatus">선택된 파일 없음</div>
+                </div>
+            </div>
+
+            <!-- Generate Button -->
+            <div class="action-section">
+                <button id="generateBtn" class="btn btn-primary btn-large disabled" disabled>
+                    <span class="btn-text">워드 자동 생성 시작</span>
+                    <span class="btn-icon">🚀</span>
+                </button>
+            </div>
+
+            <!-- Status and Progress -->
+            <div class="status-section hidden" id="statusSection">
+                <h4 id="statusText">준비 중...</h4>
+                <div class="progress-bar-container">
+                    <div class="progress-bar" id="progressBar"></div>
+                </div>
+                <ul class="log-list" id="logList"></ul>
+            </div>
+        </main>
+
+        <footer style="margin-top:2rem; font-size: 0.85rem; color:#64748b; text-align:center;">
+            <p>모든 데이터는 브라우저 내부에서만 처리되며 외부에 저장되지 않습니다.</p>
+        </footer>
+    </div>
+
+    <!-- Generate logic -->
+    <script src="wordGenerator.js"></script>
+    <script src="script.js"></script>
+</body>
+
+</html>
