@@ -22,3 +22,27 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Local dev / temp scripts
+replace_stamps.cjs
+reproduce_issue.js
+*_base64.txt
+
+# Accidentally committed npm bin files (Windows)
+*.ps1
+*.cmd
+autoprefixer
+baseline-browser-mapping
+browserslist
+cssesc
+eslint
+jiti
+js-yaml
+jsesc
+json5
+nanoid
+node-which
+parser
+resolve
+rollup
+semver

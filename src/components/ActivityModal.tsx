@@ -132,7 +132,7 @@ function SignaturePad({ onSave }: { onSave: (dataUrl: string) => void }) {
     };
 
     return (
-        <div>
+        <div style={{ touchAction: 'none' }}>
             <div style={{ border: `1px dashed ${saved ? '#86efac' : '#ccc'}`, borderRadius: 8, background: saved ? '#f0fdf4' : '#fafafa', position: 'relative', transition: 'all 0.3s' }}>
                 <canvas ref={canvasRef} width={400} height={120}
                     style={{ width: '100%', height: 120, display: 'block', borderRadius: 8, cursor: 'crosshair', touchAction: 'none' }} />
@@ -376,7 +376,7 @@ export function ActivityModal({
 
     return (
         <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.5)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:50, padding:16 }}>
-            <div style={{ background:'#fff', borderRadius:16, boxShadow:'0 25px 50px rgba(0,0,0,0.15)', width:'100%', maxWidth:480, maxHeight:'90vh', overflowY:'auto' }}>
+            <div style={{ background:'#fff', borderRadius:16, boxShadow:'0 25px 50px rgba(0,0,0,0.15)', width:'100%', maxWidth:480, maxHeight:'90vh', overflowY: showSigPad ? 'hidden' : 'auto' }}>
 
                 {/* 헤더 */}
                 <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'16px 20px', borderBottom:'0.5px solid #e5e7eb', position:'sticky', top:0, background:'#fff', zIndex:10 }}>
