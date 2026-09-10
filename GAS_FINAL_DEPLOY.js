@@ -13,6 +13,20 @@ var SESSION_SECONDS = 7200;
 var MAX_LOGIN_FAILURES = 5;
 var LOCK_MINUTES = 15;
 var ACTIVITY_LOG_START_DATE = "2026-09-04";
+var HOLIDAY_CALENDAR_ID = "ko.south_korea#holiday@group.v.calendar.google.com";
+// 현재연도와 직전연도를 온전히 보관합니다. 예: 2026년에는 2025-01-01 이후 자료 유지.
+var BOOKING_RETENTION_CALENDAR_YEARS = 2;
+var LIVE_USER_CACHE_SECONDS = 15;
+var CONFIG_CACHE_SECONDS = 60;
+var NOTICE_CACHE_SECONDS = 300;
+var BOOKING_DAY_CACHE_SECONDS = 10;
+
+function putCacheSafely(cache, key, value, seconds) {
+    var serialized = typeof value === "string" ? value : JSON.stringify(value);
+    // Apps Script cache entries are limited in size. Large signatures/images simply bypass cache.
+    if (serialized.length > 60000) return;
+    try { cache.put(key, serialized, seconds); } catch (error) { console.log("Cache skipped: " + key); }
+}
 
 function doGet(e) {
     return handleRequest(e);
@@ -71,15 +85,83 @@ function isPinExemptRecord(record) {
 function createSession(record) {
     var token = Utilities.getUuid() + Utilities.getUuid();
     var mustChangePin = !isPinExemptRecord(record) && (record.row[6] === true || String(record.row[6]).toUpperCase() === "TRUE");
-    var session = { user: publicUser(record), mustChangePin: mustChangePin };
-    CacheService.getScriptCache().put("session:" + token, JSON.stringify(session), SESSION_SECONDS);
+    var session = { user: publicUser(record), mustChangePin: mustChangePin, expiresAt: new Date().getTime() + SESSION_SECONDS * 1000 };
+    storeSession(token, session);
+    if (Math.random() < 0.05) cleanupExpiredSessions();
     return { sessionToken: token, user: session.user, mustChangePin: session.mustChangePin };
+}
+
+function sessionPropertyKey(token) {
+    return "session_v1_" + String(token || "");
+}
+
+function storeSession(token, session) {
+    var serialized = JSON.stringify(session);
+    CacheService.getScriptCache().put("session:" + token, serialized, SESSION_SECONDS);
+    PropertiesService.getScriptProperties().setProperty(sessionPropertyKey(token), serialized);
 }
 
 function getSession(token) {
     if (!token) return null;
-    var value = CacheService.getScriptCache().get("session:" + token);
-    return value ? JSON.parse(value) : null;
+    var cache = CacheService.getScriptCache();
+    var value = cache.get("session:" + token);
+    if (!value) value = PropertiesService.getScriptProperties().getProperty(sessionPropertyKey(token));
+    if (!value) return null;
+    try {
+        var session = JSON.parse(value);
+        if (session.expiresAt && session.expiresAt < new Date().getTime()) {
+            cache.remove("session:" + token);
+            PropertiesService.getScriptProperties().deleteProperty(sessionPropertyKey(token));
+            return null;
+        }
+        putCacheSafely(cache, "session:" + token, value, SESSION_SECONDS);
+        return session;
+    } catch (error) {
+        return null;
+    }
+}
+
+function removeSession(token) {
+    CacheService.getScriptCache().remove("session:" + token);
+    PropertiesService.getScriptProperties().deleteProperty(sessionPropertyKey(token));
+}
+
+function cleanupExpiredSessions() {
+    var properties = PropertiesService.getScriptProperties();
+    var all = properties.getProperties();
+    var now = new Date().getTime();
+    for (var key in all) {
+        if (key.indexOf("session_v1_") !== 0) continue;
+        try {
+            var session = JSON.parse(all[key]);
+            if (!session.expiresAt || session.expiresAt < now) properties.deleteProperty(key);
+        } catch (error) {
+            properties.deleteProperty(key);
+        }
+    }
+}
+
+function liveUserCacheKey(userId) {
+    return "live_user_v1_" + encodeURIComponent(String(userId || "").trim().toLowerCase());
+}
+
+function clearLiveUserCache(userId) {
+    CacheService.getScriptCache().remove(liveUserCacheKey(userId));
+}
+
+function getLiveUserSnapshot(userId) {
+    var cache = CacheService.getScriptCache();
+    var key = liveUserCacheKey(userId);
+    var cached = cache.get(key);
+    if (cached) return JSON.parse(cached);
+    var record = findUserRecord(userId);
+    if (!record) return null;
+    var snapshot = {
+        user: publicUser(record),
+        mustChangePin: record.row[6] === true || String(record.row[6]).toUpperCase() === "TRUE"
+    };
+    putCacheSafely(cache, key, snapshot, LIVE_USER_CACHE_SECONDS);
+    return snapshot;
 }
 
 function loginWithPin(params) {
@@ -178,18 +260,20 @@ function handleRequest(e) {
 
         var session = getSession(params.sessionToken);
         if (!session) return sendResponse({ message: "로그인이 만료되었습니다. 다시 로그인해주세요." }, false);
-        var liveRecord = findUserRecord(session.user.id);
-        if (!liveRecord || String(liveRecord.row[2] || "Active") !== "Active") return sendResponse({ message: "비활성화된 계정입니다." }, false);
-        session.user = publicUser(liveRecord);
-        session.mustChangePin = liveRecord.row[6] === true || String(liveRecord.row[6]).toUpperCase() === "TRUE";
+        var liveSnapshot = getLiveUserSnapshot(session.user.id);
+        if (!liveSnapshot || String(liveSnapshot.user.status || "Active") !== "Active") return sendResponse({ message: "비활성화된 계정입니다." }, false);
+        session.user = liveSnapshot.user;
+        session.mustChangePin = liveSnapshot.mustChangePin;
         params.authUser = session.user;
-        if (session.user.role !== "admin") params.userId = session.user.id;
+        // 날짜별 대관 현황(GET)은 모든 동아리의 점유 시간을 보여줘야 한다.
+        // 그 외 요청에서는 일반 사용자가 다른 userId를 가장하지 못하도록 본인 ID로 고정한다.
+        if (session.user.role !== "admin" && method !== "GET") params.userId = session.user.id;
 
         if (method === "VERIFY_SESSION") {
             return sendResponse({ user: session.user, mustChangePin: session.mustChangePin });
         }
         if (method === "LOGOUT") {
-            CacheService.getScriptCache().remove("session:" + params.sessionToken);
+            removeSession(params.sessionToken);
             return sendResponse({ message: "Logged out" });
         }
         if (method === "CHANGE_PIN") return changePin(params);
@@ -201,14 +285,29 @@ function handleRequest(e) {
 
         // 1. 설정 불러오기 (시트에서 읽기)
         if (method === "GET_CONFIG") {
-            var config = getSheetConfig();
-            if (session.user.role !== "admin") config.users = [];
+            var config = session.user.role === "admin" ? getSheetConfig() : getPublicConfig();
             return sendResponse(config);
+        }
+
+        if (method === "GET_HOLIDAYS") {
+            return getKoreanHolidays(params);
+        }
+
+        if (method === "GET_DASHBOARD") {
+            return getDashboardData(params);
+        }
+
+        if (method === "GET_PERFORMANCE_DATA") {
+            if (session.user.role !== "admin") return sendResponse({ message: "관리자 권한이 필요합니다." }, false);
+            return getPerformanceData(params);
         }
 
         // 2. 예약 조회
         if (method === "GET") {
-            if (!params.date && !params.userId && session.user.role !== "admin") return sendResponse({ message: "관리자 권한이 필요합니다." }, false);
+            if (session.user.role !== "admin") {
+                // 날짜 조회: 전체 예약의 공개 정보만 반환 / 내 예약 조회: 본인 ID로 강제
+                params.userId = params.date ? "" : session.user.id;
+            }
             return getBookings(params);
         }
 
@@ -279,7 +378,9 @@ function changePin(params) {
     try { setPinForRecord(record, newPin, false); }
     catch (error) { return sendResponse({ message: error.message }, false); }
     var session = { user: publicUser(record), mustChangePin: false };
-    CacheService.getScriptCache().put("session:" + params.sessionToken, JSON.stringify(session), SESSION_SECONDS);
+    session.expiresAt = new Date().getTime() + SESSION_SECONDS * 1000;
+    storeSession(params.sessionToken, session);
+    clearLiveUserCache(record.row[0]);
     return sendResponse({ message: "PIN이 변경되었습니다." });
 }
 
@@ -290,11 +391,15 @@ function adminResetPin(params) {
     if (isPinExemptRecord(record)) return sendResponse({ message: "데일리 계정은 PIN을 사용하지 않습니다." }, false);
     try { setPinForRecord(record, String(params.newPin || ""), true); }
     catch (error) { return sendResponse({ message: error.message }, false); }
+    clearLiveUserCache(record.row[0]);
     return sendResponse({ message: "임시 PIN으로 초기화했습니다." });
 }
 
 
 function getSheetConfig() {
+    var cache = CacheService.getScriptCache();
+    var cached = cache.get("sheet_config_v1");
+    if (cached) return JSON.parse(cached);
     var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
 
     // 1. Users 시트 읽기
@@ -324,7 +429,27 @@ function getSheetConfig() {
     if (!hasAdmin) users.push({ id: "Admin", name: "관리자", status: "Active", role: "admin" });
 
     // 2. Rooms 시트 읽기
-    var roomSheet = ss.getSheetByName("Rooms");
+    var rooms = getRoomsData();
+
+    var clubAccountCount = users.filter(function (u) {
+        return u.role !== 'admin' && u.id.toLowerCase() !== 'daily' && u.id !== '데일리';
+    }).length;
+
+    var result = {
+        users: users,
+        rooms: rooms,
+        maxClubAccounts: MAX_CLUB_ACCOUNTS,
+        clubAccountCount: clubAccountCount
+    };
+    putCacheSafely(cache, "sheet_config_v1", result, CONFIG_CACHE_SECONDS);
+    return result;
+}
+
+function getRoomsData() {
+    var cache = CacheService.getScriptCache();
+    var cached = cache.get("rooms_v1");
+    if (cached) return JSON.parse(cached);
+    var roomSheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName("Rooms");
     var rooms = [];
     if (roomSheet) {
         var rows = roomSheet.getDataRange().getValues();
@@ -340,29 +465,59 @@ function getSheetConfig() {
         }
     }
 
-    var clubAccountCount = users.filter(function (u) {
-        return u.role !== 'admin' && u.id.toLowerCase() !== 'daily' && u.id !== '데일리';
-    }).length;
+    putCacheSafely(cache, "rooms_v1", rooms, NOTICE_CACHE_SECONDS);
+    return rooms;
+}
 
+function getPublicConfig() {
     return {
-        users: users,
-        rooms: rooms,
+        users: [],
+        rooms: getRoomsData(),
         maxClubAccounts: MAX_CLUB_ACCOUNTS,
-        clubAccountCount: clubAccountCount
+        clubAccountCount: 0
     };
 }
 
-function getBookings(params) {
+function bookingDayCacheKey(date) {
+    return "booking_day_v2_" + String(date || "");
+}
+
+function clearBookingDayCache(date) {
+    if (date) CacheService.getScriptCache().remove(bookingDayCacheKey(date));
+}
+
+function getBookingRows(sheet, targetDate) {
+    if (!targetDate) return sheet.getDataRange().getValues();
+    var cache = CacheService.getScriptCache();
+    var key = bookingDayCacheKey(targetDate);
+    var cached = cache.get(key);
+    if (cached) return JSON.parse(cached);
+    var allRows = sheet.getDataRange().getValues();
+    var rows = [];
+    for (var i = 1; i < allRows.length; i++) {
+        if (formatDateSafe(allRows[i][3]) === targetDate) {
+            var normalizedRow = allRows[i].slice();
+            normalizedRow[3] = targetDate;
+            normalizedRow[4] = formatTimeSafe(normalizedRow[4]);
+            normalizedRow[5] = formatTimeSafe(normalizedRow[5]);
+            rows.push(normalizedRow);
+        }
+    }
+    putCacheSafely(cache, key, rows, BOOKING_DAY_CACHE_SECONDS);
+    return rows;
+}
+
+function getBookingsData(params) {
     var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
     var sheet = ss.getSheetByName("예약내역");
-    if (!sheet) return sendResponse([]);
+    if (!sheet) return [];
 
-    var data = sheet.getDataRange().getValues();
+    var data = getBookingRows(sheet, params.date);
     var bookings = [];
     var targetDate = params.date;
     var targetUser = params.userId;
 
-    for (var i = 1; i < data.length; i++) {
+    for (var i = targetDate ? 0 : 1; i < data.length; i++) {
         var row = data[i];
         if (row.length < 7) continue;
 
@@ -374,31 +529,198 @@ function getBookings(params) {
 
         bookings.push({
             id: row[0],
-            userId: row[1],
+            // 다른 동아리에는 로그인 ID를 노출하지 않고 화면 표시용 식별자만 제공한다.
+            userId: canSeeDetails ? row[1] : "occupied_" + (targetDate ? String(targetDate).replace(/-/g, "") + "_" : "") + i,
             userName: row[2],
             date: rowDate,
             startTime: formatTimeSafe(row[4]),
             endTime: formatTimeSafe(row[5]),
             roomId: row[6],
-            createdAt: row[7],
+            createdAt: canSeeDetails ? row[7] : "",
             phoneNumber: canSeeDetails ? (row[8] || "") : "",
+            reserverName: canSeeDetails ? (row[25] || "") : "",
             activityContent: canSeeDetails ? (row[9] || "") : "",
             suggestion: canSeeDetails ? (row[10] || "") : "",
+            headcount: {
+                elemM: canSeeDetails ? (parseInt(row[11]) || 0) : 0, elemF: canSeeDetails ? (parseInt(row[12]) || 0) : 0,
+                midM: canSeeDetails ? (parseInt(row[13]) || 0) : 0, midF: canSeeDetails ? (parseInt(row[14]) || 0) : 0,
+                highM: canSeeDetails ? (parseInt(row[15]) || 0) : 0, highF: canSeeDetails ? (parseInt(row[16]) || 0) : 0,
+                u24M: canSeeDetails ? (parseInt(row[17]) || 0) : 0, u24F: canSeeDetails ? (parseInt(row[18]) || 0) : 0
+            },
+            participants: canSeeDetails ? (row[19] || "") : "",
+            signature: canSeeDetails ? (row[20] || "") : "",
+            expectedHeadcount: canSeeDetails ? (parseInt(row[21]) || 0) : 0,
+            reportStatus: canSeeDetails ? (row[22] || "") : "",
+            reportCompletedAt: canSeeDetails ? (row[23] || "") : "",
+            reportUpdatedBy: canSeeDetails ? (row[24] || "") : ""
+        });
+    }
+    return bookings;
+}
+
+function getBookings(params) {
+    return sendResponse(getBookingsData(params));
+}
+
+function getHolidayCalendarForYear(year) {
+    var cache = CacheService.getScriptCache();
+    var cacheKey = "kr_holidays_v1_" + year;
+    var cached = cache.get(cacheKey);
+    if (cached) return JSON.parse(cached);
+
+    var calendar = CalendarApp.getCalendarById(HOLIDAY_CALENDAR_ID);
+    if (!calendar) {
+        var names = ["대한민국의 휴일", "대한민국 공휴일", "Holidays in South Korea"];
+        for (var i = 0; i < names.length && !calendar; i++) {
+            var candidates = CalendarApp.getCalendarsByName(names[i]);
+            if (candidates.length) calendar = candidates[0];
+        }
+    }
+    if (!calendar) {
+        var unavailable = { available: false, holidays: [] };
+        cache.put(cacheKey, JSON.stringify(unavailable), 21600);
+        return unavailable;
+    }
+
+    var events = calendar.getEvents(new Date(year, 0, 1, 0, 0, 0), new Date(year + 1, 0, 1, 0, 0, 0));
+    var byDate = {};
+    for (var j = 0; j < events.length; j++) {
+        var date = Utilities.formatDate(events[j].getStartTime(), TIMEZONE, "yyyy-MM-dd");
+        var title = String(events[j].getTitle() || "공휴일");
+        byDate[date] = byDate[date] ? byDate[date] + ", " + title : title;
+    }
+    var holidays = Object.keys(byDate).sort().map(function (date) { return { date: date, name: byDate[date] }; });
+    var result = { available: true, holidays: holidays };
+    cache.put(cacheKey, JSON.stringify(result), 21600);
+    return result;
+}
+
+function getKoreanHolidaysData(params) {
+    var rawYears = params.years instanceof Array ? params.years : String(params.years || "").split(",");
+    var years = rawYears.map(function (value) { return parseInt(value); }).filter(function (value) { return value >= 2000 && value <= 2100; });
+    if (!years.length) years = [new Date().getFullYear()];
+    years = years.filter(function (value, index, self) { return self.indexOf(value) === index; }).slice(0, 5);
+
+    var holidays = [];
+    var available = true;
+    for (var i = 0; i < years.length; i++) {
+        var yearResult = getHolidayCalendarForYear(years[i]);
+        available = available && yearResult.available;
+        holidays = holidays.concat(yearResult.holidays);
+    }
+    return { holidays: holidays, available: available };
+}
+
+function getKoreanHolidays(params) {
+    return sendResponse(getKoreanHolidaysData(params));
+}
+
+function getDashboardData(params) {
+    var config = params.authUser.role === "admin" ? getSheetConfig() : getPublicConfig();
+    params.userId = params.authUser.role === "admin" ? String(params.userId || "") : "";
+    return sendResponse({
+        config: config,
+        notices: getNoticesData(),
+        holidays: getKoreanHolidaysData({ years: [params.year] }),
+        bookings: getBookingsData(params)
+    });
+}
+
+function isMajorHolidayClosure(holidayName) {
+    return /설날|추석|Lunar New Year|Korean New Year|Chuseok/i.test(String(holidayName || ""));
+}
+
+function getOperatingHoursForDate(dateStr) {
+    var match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateStr || ""));
+    if (!match) return { start: 9, end: 21, closed: false, holidayName: "" };
+    var year = parseInt(match[1]);
+    var holidayResult = getHolidayCalendarForYear(year);
+    var holidayName = "";
+    for (var i = 0; i < holidayResult.holidays.length; i++) {
+        if (holidayResult.holidays[i].date === dateStr) {
+            holidayName = holidayResult.holidays[i].name;
+            break;
+        }
+    }
+    var date = new Date(year, parseInt(match[2]) - 1, parseInt(match[3]), 12, 0, 0);
+    var closed = !!holidayName && isMajorHolidayClosure(holidayName);
+    var holidaySchedule = date.getDay() === 0 || !!holidayName;
+    return { start: holidaySchedule ? 10 : 9, end: holidaySchedule ? 17 : 21, closed: closed, holidayName: holidayName };
+}
+
+function getPerformanceData(params) {
+    var mode = ["week", "month", "quarter", "year"].indexOf(String(params.mode)) >= 0 ? String(params.mode) : "month";
+    var basis = String(params.basis) === "completed" ? "completed" : "ended";
+    var year = parseInt(params.year) || new Date().getFullYear();
+    var month = Math.min(12, Math.max(1, parseInt(params.month) || 1));
+    var quarter = Math.min(4, Math.max(1, parseInt(params.quarter) || 1));
+    var weekStart = /^\d{4}-\d{2}-\d{2}$/.test(String(params.weekStart || "")) ? String(params.weekStart) : "";
+    var weekEnd = /^\d{4}-\d{2}-\d{2}$/.test(String(params.weekEnd || "")) ? String(params.weekEnd) : "";
+    if (mode === "week" && (!weekStart || !weekEnd || weekStart > weekEnd)) {
+        return sendResponse({ message: "주간 조회 기간이 올바르지 않습니다." }, false);
+    }
+    var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    var sheet = ss.getSheetByName("예약내역");
+    var config = getSheetConfig();
+    var clubs = {};
+    config.users.forEach(function (item) {
+        if (item.role !== "admin" && item.status === "Active" && !isDailyUserId(item.id)) clubs[String(item.id).toLowerCase()] = true;
+    });
+    var holidayYears = [year];
+    if (mode === "week") {
+        holidayYears = [parseInt(weekStart.substring(0, 4))];
+        var weekEndYear = parseInt(weekEnd.substring(0, 4));
+        if (holidayYears.indexOf(weekEndYear) === -1) holidayYears.push(weekEndYear);
+    }
+    var holidayResult = { available: true, holidays: [] };
+    holidayYears.forEach(function (holidayYear) {
+        var result = getHolidayCalendarForYear(holidayYear);
+        holidayResult.available = holidayResult.available && result.available;
+        holidayResult.holidays = holidayResult.holidays.concat(result.holidays);
+    });
+    if (!sheet) return sendResponse({ bookings: [], holidays: holidayResult.holidays, available: holidayResult.available, availableYears: [year] });
+
+    var data = sheet.getDataRange().getValues();
+    var nowKey = Utilities.formatDate(new Date(), TIMEZONE, "yyyy-MM-dd HH:mm");
+    var bookings = [];
+    var yearSet = {};
+    for (var i = 1; i < data.length; i++) {
+        var row = data[i];
+        var userId = String(row[1] || "").trim();
+        if (!clubs[userId.toLowerCase()]) continue;
+        var date = formatDateSafe(row[3]);
+        var match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+        if (!match) continue;
+        var rowYear = parseInt(match[1]);
+        var rowMonth = parseInt(match[2]);
+        yearSet[rowYear] = true;
+        if (mode === "week") {
+            if (date < weekStart || date > weekEnd) continue;
+        } else {
+            if (rowYear !== year) continue;
+            if (mode === "month" && rowMonth !== month) continue;
+            if (mode === "quarter" && Math.ceil(rowMonth / 3) !== quarter) continue;
+        }
+        var endTime = formatTimeSafe(row[5]);
+        if (!endTime || date + " " + endTime > nowKey) continue;
+        var completed = String(row[22] || "") === "Completed" || !!String(row[9] || "").trim();
+        if (basis === "completed" && !completed) continue;
+        bookings.push({
+            id: String(row[0] || "ROW_" + (i + 1)), userId: userId, userName: String(row[2] || userId),
+            date: date, startTime: formatTimeSafe(row[4]), endTime: endTime, roomId: String(row[6] || ""),
+            createdAt: row[7] || "", activityContent: completed ? "제출" : "", reportStatus: completed ? "Completed" : String(row[22] || ""),
             headcount: {
                 elemM: parseInt(row[11]) || 0, elemF: parseInt(row[12]) || 0,
                 midM: parseInt(row[13]) || 0, midF: parseInt(row[14]) || 0,
                 highM: parseInt(row[15]) || 0, highF: parseInt(row[16]) || 0,
                 u24M: parseInt(row[17]) || 0, u24F: parseInt(row[18]) || 0
             },
-            participants: canSeeDetails ? (row[19] || "") : "",
-            signature: canSeeDetails ? (row[20] || "") : "",
-            expectedHeadcount: parseInt(row[21]) || 0,
-            reportStatus: row[22] || "",
-            reportCompletedAt: row[23] || "",
-            reportUpdatedBy: row[24] || ""
+            expectedHeadcount: parseInt(row[21]) || 0
         });
     }
-    return sendResponse(bookings);
+    yearSet[year] = true;
+    var availableYears = Object.keys(yearSet).map(function (value) { return parseInt(value); }).sort(function (a, b) { return b - a; });
+    return sendResponse({ bookings: bookings, holidays: holidayResult.holidays, available: holidayResult.available, availableYears: availableYears });
 }
 
 // -----------------------------------------------------------
@@ -432,23 +754,32 @@ function createBooking(params) {
         var roomId = String(params.roomId || "").trim();
         var startTime = params.startTime;
         var expectedHeadcount = parseInt(params.expectedHeadcount || 0);
+        var requestedStartHour = parseInt(String(startTime || "").split(":")[0]);
+        var operating = getOperatingHoursForDate(inputDate);
+
+        if (operating.closed) return sendResponse({ message: (operating.holidayName || "명절 연휴") + "은 센터 휴관일이라 예약할 수 없습니다." }, false);
+        if (isNaN(requestedStartHour) || duration < 1 || requestedStartHour < operating.start || requestedStartHour + duration > operating.end) {
+            return sendResponse({ message: "해당 날짜의 운영시간은 " + operating.start + ":00~" + operating.end + ":00입니다." }, false);
+        }
 
         if (!expectedHeadcount || expectedHeadcount < 1 || expectedHeadcount > 99) {
             return sendResponse({ message: "예정 활동인원을 1~99명 사이로 입력해주세요." }, false);
         }
 
         // 유저 권한 확인
-        var config = getSheetConfig();
-        var user = config.users.find(function (u) { return u.id.toLowerCase() === userId.toLowerCase(); });
+        var user = params.authUser;
         var userName = user ? user.name : userId;
         var isAdmin = user && user.role === 'admin';
         var isDaily = isDailyUserId(userId);
+        var reserverName = isDaily ? String(params.reserverName || "").trim() : "";
+        if (isDaily && (!reserverName || reserverName.length > 50)) return sendResponse({ message: "예약자 이름을 1~50자로 입력해주세요." }, false);
+        if (isDaily && !/^010\d{8}$/.test(String(params.phoneNumber || "").replace(/-/g, ""))) return sendResponse({ message: "올바른 휴대전화 번호를 입력해주세요." }, false);
 
-        // 2. 3시간 제한 체크 (Admin 제외)
+        // 2. 동아리만 하루 3시간 제한 (관리자·데일리 제외)
         var data = sheet.getDataRange().getValues();
         var totalHours = 0;
 
-        if (!isAdmin) {
+        if (!isAdmin && !isDaily) {
             if (!isDaily && collectPendingActivityReports(userId, sheet).length > 0) {
                 return sendResponse({ message: "미작성 활동일지가 있습니다. 활동일지를 먼저 제출한 뒤 새 예약을 진행해주세요." }, false);
             }
@@ -479,7 +810,7 @@ function createBooking(params) {
         }
 
         // 3. 중복 예약(방/시간) 체크
-        var startHour = parseInt(startTime.split(":")[0]);
+        var startHour = requestedStartHour;
         for (var i = 1; i < data.length; i++) {
             if (formatDateSafe(data[i][3]) === inputDate && String(data[i][6]).trim() === roomId) {
                 var rs = parseInt(formatTimeSafe(data[i][4]).split(":")[0]);
@@ -495,6 +826,8 @@ function createBooking(params) {
         var endTime = (startHour + duration) + ":00";
         var createdAt = Utilities.formatDate(new Date(), TIMEZONE, "yyyy-MM-dd HH:mm:ss");
 
+        if (sheet.getMaxColumns() < 26) sheet.insertColumnsAfter(sheet.getMaxColumns(), 26 - sheet.getMaxColumns());
+        if (!sheet.getRange(1, 26).getValue()) sheet.getRange(1, 26).setValue("예약자 이름");
         sheet.appendRow([
             newId,
             userId,
@@ -513,8 +846,10 @@ function createBooking(params) {
             expectedHeadcount,           // V 예정 활동인원
             isDaily ? "NotRequired" : "Pending", // W 데일리는 수기 작성, 동아리는 활동 후 작성
             "",                         // X 제출일시
-            ""                          // Y 최종 작성자
+            "",                         // Y 최종 작성자
+            reserverName                // Z 데일리 예약자 이름
         ]);
+        clearBookingDayCache(inputDate);
 
         return sendResponse({
             id: newId,
@@ -543,10 +878,7 @@ function cancelBooking(params) {
     }
 
     // [중요] 유저 정보 다시 조회하여 관리자 여부 판별 (대소문자 무시)
-    var config = getSheetConfig();
-    var user = config.users.find(function (u) {
-        return u.id.toLowerCase() === userId.toLowerCase();
-    });
+    var user = params.authUser;
     var isAdmin = user && user.role === 'admin';
 
     var data = sheet.getDataRange().getValues();
@@ -559,7 +891,9 @@ function cancelBooking(params) {
         if (rowBookingId === bookingId) {
             // 본인 확인 OR 관리자 권한 확인 (대소문자 무시 비교)
             if (rowUserId.toLowerCase() === userId.toLowerCase() || isAdmin) {
+                var cancelledDate = formatDateSafe(data[i][3]);
                 sheet.deleteRow(i + 1);
+                clearBookingDayCache(cancelledDate);
                 console.log("취소 성공: " + bookingId + " (요청자: " + userId + ")");
                 return sendResponse({ message: "예약이 정상적으로 취소되었습니다." });
             } else {
@@ -585,10 +919,16 @@ function updateBooking(params) {
     var newStartTime = params.startTime;
     var newDuration = parseInt(params.duration);
     var newRoomId = params.roomId;
+    var startHour = parseInt(String(newStartTime || "").split(":")[0]);
+    var operating = getOperatingHoursForDate(newDate);
+
+    if (operating.closed) return sendResponse({ message: (operating.holidayName || "명절 연휴") + "은 센터 휴관일이라 예약할 수 없습니다." }, false);
+    if (isNaN(startHour) || newDuration < 1 || startHour < operating.start || startHour + newDuration > operating.end) {
+        return sendResponse({ message: "해당 날짜의 운영시간은 " + operating.start + ":00~" + operating.end + ":00입니다." }, false);
+    }
 
     // 유저 정보 조회 (Admin 체크용)
-    var config = getSheetConfig();
-    var user = config.users.find(function (u) { return u.id.toLowerCase() === userId.toLowerCase(); });
+    var user = params.authUser;
     var isAdmin = user && user.role === 'admin';
 
     // 1. Find the booking ROW
@@ -604,9 +944,10 @@ function updateBooking(params) {
     }
 
     if (rowIndex === -1) return sendResponse({ message: "Booking not found" }, false);
+    var oldDate = formatDateSafe(data[rowIndex][3]);
 
-    // [New] 3시간 제한 체크 (Admin 제외) - createBooking과 동일한 로직 적용
-    if (!isAdmin) {
+    // 동아리만 하루 3시간 제한 (관리자·데일리 제외)
+    if (!isAdmin && !isDailyUserId(userId)) {
         var totalHours = 0;
         for (var i = 1; i < data.length; i++) {
             // Skip self and other users
@@ -639,7 +980,6 @@ function updateBooking(params) {
     }
 
     // 2. Calculate New EndTime
-    var startHour = parseInt(newStartTime.split(":")[0]);
     var newEndTime = (startHour + newDuration) + ":00";
 
     // 3. Check Overlap using formatDateSafe
@@ -663,6 +1003,8 @@ function updateBooking(params) {
     // 날짜도 newDate(표준 포맷)로 업데이트 해야 함
     var range = sheet.getRange(rowIndex + 1, 4, 1, 4); // Columns D, E, F, G (Date, Start, End, Room)
     range.setValues([[newDate, newStartTime, newEndTime, newRoomId]]);
+    clearBookingDayCache(oldDate);
+    clearBookingDayCache(newDate);
 
     return sendResponse({ message: "Booking updated" });
 }
@@ -766,8 +1108,7 @@ function submitActivityLog(params) {
         var sheet = ss.getSheetByName("예약내역");
         if (!sheet) return sendResponse({ message: "예약내역 시트를 찾을 수 없습니다." }, false);
 
-        var config = getSheetConfig();
-        var writer = config.users.find(function (u) { return u.id.toLowerCase() === userId.toLowerCase(); });
+        var writer = params.authUser;
         var isAdmin = writer && writer.role === 'admin';
         var data = sheet.getDataRange().getValues();
 
@@ -799,6 +1140,7 @@ function submitActivityLog(params) {
             ]]);
             var completedAt = Utilities.formatDate(new Date(), TIMEZONE, "yyyy-MM-dd HH:mm:ss");
             sheet.getRange(i + 1, 23, 1, 3).setValues([["Completed", completedAt, userId]]);
+            clearBookingDayCache(formatDateSafe(row[3]));
             return sendResponse({ message: "활동일지가 저장되었습니다.", completedAt: completedAt });
         }
         return sendResponse({ message: "예약을 찾을 수 없습니다." }, false);
@@ -807,10 +1149,13 @@ function submitActivityLog(params) {
     }
 }
 
-function getNotices() {
+function getNoticesData() {
+    var cache = CacheService.getScriptCache();
+    var cached = cache.get("notices_v1");
+    if (cached) return JSON.parse(cached);
     var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
     var sheet = ss.getSheetByName("Notices");
-    if (!sheet) return sendResponse([]);
+    if (!sheet) return [];
 
     var data = sheet.getDataRange().getValues();
     var notices = [];
@@ -832,7 +1177,12 @@ function getNotices() {
     }
     // 최신순 정렬 (역순)
     notices.reverse();
-    return sendResponse(notices);
+    putCacheSafely(cache, "notices_v1", notices, NOTICE_CACHE_SECONDS);
+    return notices;
+}
+
+function getNotices() {
+    return sendResponse(getNoticesData());
 }
 
 function createNotice(params) {
@@ -853,6 +1203,7 @@ function createNotice(params) {
     var dateStr = Utilities.formatDate(now, TIMEZONE, "yyyy-MM-dd HH:mm");
 
     sheet.appendRow([newId, title, content, author, dateStr, imageUrl]);
+    CacheService.getScriptCache().remove("notices_v1");
 
     return sendResponse({
         id: newId,
@@ -892,42 +1243,21 @@ function deleteOldBookings() {
     if (!sheet) return;
 
     var rows = sheet.getDataRange().getValues();
-    if (rows.length <= 1) return; // Header only
-
-    var header = rows[0];
-    var data = rows.slice(1);
+    if (rows.length <= 1) return;
     var now = new Date();
-    // 2 Months ago
-    var cutoffDate = new Date();
-    cutoffDate.setMonth(now.getMonth() - 2);
+    var cutoffYear = now.getFullYear() - (BOOKING_RETENTION_CALENDAR_YEARS - 1);
+    var cutoffKey = cutoffYear + "-01-01";
+    var deleted = 0;
 
-    // Filter data: Keep records that are NOT old
-    var newData = data.filter(function (row) {
-        // Date is at index 3 (Column D)
-        if (!row[3]) return false;
-
-        var dateVal = row[3];
-        // Handle Date object or String
-        var rowDate;
-        if (dateVal instanceof Date) {
-            rowDate = dateVal;
-        } else {
-            rowDate = new Date(dateVal);
+    // 아래에서 위로 지워야 행 번호가 변하지 않으며, 서식과 헤더도 보존됩니다.
+    for (var i = rows.length - 1; i >= 1; i--) {
+        var dateKey = formatDateSafe(rows[i][3]);
+        if (dateKey && dateKey < cutoffKey) {
+            sheet.deleteRow(i + 1);
+            deleted++;
         }
-
-        // Keep if rowDate >= cutoffDate
-        return rowDate >= cutoffDate;
-    });
-
-    // If deletions occurred
-    if (newData.length < data.length) {
-        sheet.clearContents();
-        sheet.appendRow(header);
-        if (newData.length > 0) {
-            sheet.getRange(2, 1, newData.length, newData[0].length).setValues(newData);
-        }
-        console.log("Deleted " + (data.length - newData.length) + " old bookings.");
     }
+    console.log("Deleted " + deleted + " bookings before " + cutoffKey + ".");
 }
 
 // -------------------------------------------------------------

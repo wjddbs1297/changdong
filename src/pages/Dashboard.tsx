@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { format, addDays, isSunday, startOfToday } from 'date-fns';
 import { ko } from 'date-fns/locale';
 import { Calendar as CalendarIcon, ChevronLeft, ChevronRight, Check } from 'lucide-react';
@@ -27,6 +27,9 @@ export function Dashboard() {
     const [pendingPhoneNumber, setPendingPhoneNumber] = useState<string | undefined>(undefined);
     const [holidayYears, setHolidayYears] = useState<Record<number, HolidayCalendarResult>>({});
     const [holidayWarning, setHolidayWarning] = useState('');
+    const [initialized, setInitialized] = useState(false);
+    const initialDateRef = useRef(selectedDate);
+    const loadedDateRef = useRef('');
 
     const isSun = isSunday(selectedDate);
     const selectedDateKey = format(selectedDate, 'yyyy-MM-dd');
@@ -42,19 +45,39 @@ export function Dashboard() {
 
     useEffect(() => {
         const init = async () => {
-            const config = await dataService.getConfig();
-            setRooms(config.rooms);
-            setUsers(config.users);
-            if (config.rooms.length > 0) setSelectedRoom(config.rooms[0]);
+            const initialDateKey = format(initialDateRef.current, 'yyyy-MM-dd');
+            const initialYear = initialDateRef.current.getFullYear();
             try {
-                const noticeData = await dataService.getNotices();
+                const data = await dataService.getDashboardData(initialDateKey, initialYear);
+                setRooms(data.config.rooms);
+                setUsers(data.config.users);
+                setNotices(data.notices);
+                setHolidayYears({ [initialYear]: data.holidays });
+                setHolidayWarning(data.holidays.available ? '' : '공휴일 정보를 불러오지 못했습니다. 일요일 운영시간만 적용됩니다.');
+                setBookings(data.bookings);
+                loadedDateRef.current = initialDateKey;
+                if (data.config.rooms.length > 0) setSelectedRoom(data.config.rooms[0]);
+            } catch (error) {
+                console.error(error);
+                const [config, noticeData, holidayData, bookingData] = await Promise.all([
+                    dataService.getConfig(), dataService.getNotices(), dataService.getHolidays([initialYear]), dataService.getBookings(initialDateKey)
+                ]);
+                setRooms(config.rooms);
+                setUsers(config.users);
                 setNotices(noticeData);
-            } catch (e) { console.error(e); }
+                setHolidayYears({ [initialYear]: holidayData });
+                setBookings(bookingData);
+                loadedDateRef.current = initialDateKey;
+                if (config.rooms.length > 0) setSelectedRoom(config.rooms[0]);
+            } finally {
+                setInitialized(true);
+            }
         };
         init();
     }, []);
 
     useEffect(() => {
+        if (!initialized) return;
         if (holidayYears[selectedYear]) return;
         dataService.getHolidays([selectedYear]).then(result => {
             setHolidayYears(current => ({ ...current, [selectedYear]: result }));
@@ -64,22 +87,28 @@ export function Dashboard() {
             setHolidayYears(current => ({ ...current, [selectedYear]: { holidays: [], available: false } }));
             setHolidayWarning('공휴일 정보를 불러오지 못했습니다. Apps Script 배포와 캘린더 권한을 확인해주세요.');
         });
-    }, [selectedYear, holidayYears]);
+    }, [initialized, selectedYear, holidayYears]);
 
     const loadBookings = async () => {
-        if (!selectedRoom) return;
         setLoading(true);
         try {
             const dateStr = format(selectedDate, 'yyyy-MM-dd');
             const data = await dataService.getBookings(dateStr);
-            setBookings(data.filter(b => b.roomId === selectedRoom.id));
+            setBookings(data);
+            loadedDateRef.current = dateStr;
         } catch (err) { console.error(err); }
         finally { setLoading(false); }
     };
 
     useEffect(() => {
-        if (selectedRoom) { loadBookings(); setSelectedSlots([]); }
-    }, [selectedDate, selectedRoom]);
+        if (!initialized) return;
+        setSelectedSlots([]);
+        if (loadedDateRef.current !== selectedDateKey) loadBookings();
+    }, [initialized, selectedDateKey]);
+
+    useEffect(() => {
+        setSelectedSlots([]);
+    }, [selectedRoom]);
 
     useEffect(() => {
         if (user) {
@@ -186,6 +215,7 @@ export function Dashboard() {
     };
 
     const getSlotBooking = (hour: number) => bookings.find(b => {
+        if (b.roomId !== selectedRoom?.id) return false;
         const start = parseInt(b.startTime.toString().split(':')[0]);
         const end = parseInt(b.endTime.toString().split(':')[0]);
         return hour >= start && hour < end;

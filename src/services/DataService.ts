@@ -30,6 +30,7 @@ export interface DataService {
     getPendingActivityReports(userId: string): Promise<Booking[]>;
     getMembers(userId: string): Promise<ClubMember[]>;
     getHolidays(years: number[]): Promise<HolidayCalendarResult>;
+    getDashboardData(date: string, year: number): Promise<DashboardDataResult>;
     getPerformanceData(query: PerformanceQuery): Promise<PerformanceDataResult>;
     submitActivityReport(data: ActivityReportRequest): Promise<void>;
 }
@@ -70,6 +71,13 @@ export interface PerformanceQuery {
 export interface PerformanceDataResult extends HolidayCalendarResult {
     bookings: Booking[];
     availableYears: number[];
+}
+
+export interface DashboardDataResult {
+    config: Config;
+    notices: Notice[];
+    holidays: HolidayCalendarResult;
+    bookings: Booking[];
 }
 
 let configCache: Config | null = null;
@@ -229,6 +237,16 @@ export class ApiDataService implements DataService {
         const response = await protectedPost(url, { method: 'GET_HOLIDAYS', years });
         const json = await response.json();
         if (json.status !== 'success') throw new Error(json.message || '공휴일 정보를 불러오지 못했습니다.');
+        return json.data;
+    }
+
+    async getDashboardData(date: string, year: number): Promise<DashboardDataResult> {
+        const url = getApiUrl();
+        if (!url) throw new Error('API configuration missing');
+        const response = await protectedPost(url, { method: 'GET_DASHBOARD', date, year });
+        const json = await response.json();
+        if (json.status !== 'success') throw new Error(json.message || '예약 화면을 불러오지 못했습니다.');
+        configCache = json.data.config;
         return json.data;
     }
 
