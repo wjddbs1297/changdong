@@ -293,10 +293,6 @@ function handleRequest(e) {
             return getKoreanHolidays(params);
         }
 
-        if (method === "GET_DASHBOARD") {
-            return getDashboardData(params);
-        }
-
         if (method === "GET_PERFORMANCE_DATA") {
             if (session.user.role !== "admin") return sendResponse({ message: "관리자 권한이 필요합니다." }, false);
             return getPerformanceData(params);
@@ -613,17 +609,6 @@ function getKoreanHolidaysData(params) {
 
 function getKoreanHolidays(params) {
     return sendResponse(getKoreanHolidaysData(params));
-}
-
-function getDashboardData(params) {
-    var config = params.authUser.role === "admin" ? getSheetConfig() : getPublicConfig();
-    params.userId = params.authUser.role === "admin" ? String(params.userId || "") : "";
-    return sendResponse({
-        config: config,
-        notices: getNoticesData(),
-        holidays: getKoreanHolidaysData({ years: [params.year] }),
-        bookings: getBookingsData(params)
-    });
 }
 
 function isMajorHolidayClosure(holidayName) {

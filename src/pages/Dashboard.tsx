@@ -48,17 +48,6 @@ export function Dashboard() {
             const initialDateKey = format(initialDateRef.current, 'yyyy-MM-dd');
             const initialYear = initialDateRef.current.getFullYear();
             try {
-                const data = await dataService.getDashboardData(initialDateKey, initialYear);
-                setRooms(data.config.rooms);
-                setUsers(data.config.users);
-                setNotices(data.notices);
-                setHolidayYears({ [initialYear]: data.holidays });
-                setHolidayWarning(data.holidays.available ? '' : '공휴일 정보를 불러오지 못했습니다. 일요일 운영시간만 적용됩니다.');
-                setBookings(data.bookings);
-                loadedDateRef.current = initialDateKey;
-                if (data.config.rooms.length > 0) setSelectedRoom(data.config.rooms[0]);
-            } catch (error) {
-                console.error(error);
                 const [config, noticeData, holidayData, bookingData] = await Promise.all([
                     dataService.getConfig(), dataService.getNotices(), dataService.getHolidays([initialYear]), dataService.getBookings(initialDateKey)
                 ]);
@@ -66,9 +55,13 @@ export function Dashboard() {
                 setUsers(config.users);
                 setNotices(noticeData);
                 setHolidayYears({ [initialYear]: holidayData });
+                setHolidayWarning(holidayData.available ? '' : '공휴일 정보를 불러오지 못했습니다. 일요일 운영시간만 적용됩니다.');
                 setBookings(bookingData);
                 loadedDateRef.current = initialDateKey;
                 if (config.rooms.length > 0) setSelectedRoom(config.rooms[0]);
+            } catch (error) {
+                console.error(error);
+                setHolidayWarning('예약 화면 일부를 불러오지 못했습니다. 잠시 후 새로고침해주세요.');
             } finally {
                 setInitialized(true);
             }
