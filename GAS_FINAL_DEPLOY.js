@@ -87,6 +87,10 @@ function createSession(record) {
     var mustChangePin = !isPinExemptRecord(record) && (record.row[6] === true || String(record.row[6]).toUpperCase() === "TRUE");
     var session = { user: publicUser(record), mustChangePin: mustChangePin, expiresAt: new Date().getTime() + SESSION_SECONDS * 1000 };
     storeSession(token, session);
+    putCacheSafely(CacheService.getScriptCache(), liveUserCacheKey(record.row[0]), {
+        user: session.user,
+        mustChangePin: session.mustChangePin
+    }, LIVE_USER_CACHE_SECONDS);
     if (Math.random() < 0.05) cleanupExpiredSessions();
     return { sessionToken: token, user: session.user, mustChangePin: session.mustChangePin };
 }
