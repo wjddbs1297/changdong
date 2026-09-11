@@ -487,7 +487,7 @@ function clearBookingDayCache(date) {
 }
 
 function getBookingRows(sheet, targetDate) {
-    if (!targetDate) return sheet.getDataRange().getValues();
+    if (!targetDate) return repairImportedBookingIdentity(sheet);
     var cache = CacheService.getScriptCache();
     var key = bookingDayCacheKey(targetDate);
     var cached = cache.get(key);
@@ -507,6 +507,47 @@ function getBookingRows(sheet, targetDate) {
     return rows;
 }
 
+// Excel rows may omit system IDs. Persist them before returning "My bookings".
+// Never replace an existing owner or guess between duplicate club names.
+function repairImportedBookingIdentity(sheet) {
+    var data = sheet.getDataRange().getValues();
+    function needsRepair(row) {
+        return row[3] && row[4] !== "" && row[5] !== "" && row[6] &&
+            (!String(row[0] || "").trim() || !String(row[1] || "").trim());
+    }
+    if (!data.slice(1).some(needsRepair)) return data;
+    var lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    try {
+        data = sheet.getDataRange().getValues();
+        var usersSheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName("Users");
+        var users = usersSheet ? usersSheet.getDataRange().getValues().slice(1) : [];
+        for (var i = 1; i < data.length; i++) {
+            var row = data[i];
+            if (!needsRepair(row)) continue;
+            if (!String(row[1] || "").trim()) {
+                var name = String(row[2] || "").trim();
+                var matches = users.filter(function (u) {
+                    return name && String(u[1] || "").trim() === name && String(u[0] || "").trim();
+                });
+                if (matches.length === 1) {
+                    row[1] = String(matches[0][0]).trim();
+                    sheet.getRange(i + 1, 2).setValue(row[1]);
+                }
+            }
+            if (!String(row[0] || "").trim()) {
+                row[0] = "BK_IMPORT_" + Utilities.getUuid();
+                sheet.getRange(i + 1, 1).setValue(row[0]);
+            }
+            clearBookingDayCache(formatDateSafe(row[3]));
+        }
+        SpreadsheetApp.flush();
+        return data;
+    } finally {
+        lock.releaseLock();
+    }
+}
+
 function getBookingsData(params) {
     var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
     var sheet = ss.getSheetByName("예약내역");
@@ -524,8 +565,8 @@ function getBookingsData(params) {
         var rowDate = formatDateSafe(row[3]); // D열 Date
 
         if (targetDate && rowDate !== targetDate) continue;
-        if (targetUser && String(row[1]).toLowerCase() !== targetUser.toLowerCase()) continue;
-        var canSeeDetails = params.authUser.role === "admin" || String(row[1]).toLowerCase() === params.authUser.id.toLowerCase();
+        if (targetUser && String(row[1]).trim().toLowerCase() !== targetUser.trim().toLowerCase()) continue;
+        var canSeeDetails = params.authUser.role === "admin" || String(row[1]).trim().toLowerCase() === params.authUser.id.trim().toLowerCase();
 
         bookings.push({
             id: row[0],
@@ -854,6 +895,17 @@ function createBooking(params) {
     }
 }
 function cancelBooking(params) {
+    return withBookingWriteLock(function () { return cancelBookingUnlocked(params); });
+}
+
+function withBookingWriteLock(action) {
+    var lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    try { return action(); }
+    finally { SpreadsheetApp.flush(); lock.releaseLock(); }
+}
+
+function cancelBookingUnlocked(params) {
     var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
     var sheet = ss.getSheetByName("예약내역");
     if (!sheet) return sendResponse({ message: "예약 내역 시트를 찾을 수 없습니다." }, false);
@@ -897,12 +949,16 @@ function cancelBooking(params) {
 }
 
 function updateBooking(params) {
+    return withBookingWriteLock(function () { return updateBookingUnlocked(params); });
+}
+
+function updateBookingUnlocked(params) {
     var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
     var sheet = ss.getSheetByName("예약내역");
     if (!sheet) return sendResponse({ message: "Sheet not found" }, false);
 
-    var bookingId = params.bookingId;
-    var userId = params.userId;
+    var bookingId = String(params.bookingId || "").trim();
+    var userId = String(params.userId || "").trim();
     // [중요] 날짜 포맷 통일
     var newDate = formatDateSafe(params.date);
     var newStartTime = params.startTime;
@@ -925,8 +981,8 @@ function updateBooking(params) {
     var rowIndex = -1;
 
     for (var i = 1; i < data.length; i++) {
-        if (String(data[i][0]) === bookingId) {
-            if (String(data[i][1]).toLowerCase() !== userId.toLowerCase()) return sendResponse({ message: "Permission denied" }, false);
+        if (String(data[i][0]).trim() === bookingId) {
+            if (String(data[i][1]).trim().toLowerCase() !== userId.toLowerCase()) return sendResponse({ message: "Permission denied" }, false);
             rowIndex = i;
             break;
         }
@@ -1038,7 +1094,7 @@ function getPendingActivityReports(params) {
 // 엑셀로 추가한 정기대관도 오늘 이후 예약이면 예약 ID와 Pending 상태를 자동 보완합니다.
 function collectPendingActivityReports(userId, sheet) {
     if (isDailyUserId(userId)) return [];
-    var data = sheet.getDataRange().getValues();
+    var data = repairImportedBookingIdentity(sheet);
     var nowKey = Utilities.formatDate(new Date(), TIMEZONE, "yyyy-MM-dd HH:mm");
     var pending = [];
     for (var i = 1; i < data.length; i++) {
@@ -1056,11 +1112,6 @@ function collectPendingActivityReports(userId, sheet) {
             row[22] = reportStatus;
         }
         if (reportStatus !== "Pending") continue;
-
-        if (!String(row[0] || "").trim()) {
-            row[0] = "BK_IMPORT_" + new Date().getTime() + "_" + (i + 1);
-            sheet.getRange(i + 1, 1).setValue(row[0]);
-        }
 
         var endKey = date + " " + endTime;
         if (endKey > nowKey) continue;
