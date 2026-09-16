@@ -148,7 +148,9 @@ export interface ActivityLogData {
 }
 
 // ── PDF/인쇄 문서 생성 ────────────────────────────────────
-function buildActivityLogHtml(data: ActivityLogData, autoPrint: boolean) {
+export function buildActivityLogHtml(data: ActivityLogData, autoPrint: boolean) {
+    const escapeText = (value: string) => String(value).replace(/[&<>"']/g, character =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!);
     const totalCount = Object.values(data.headcount).reduce((s,v)=>s+v,0);
     const rows = [
         { label: '초등', m: data.headcount.elemM, f: data.headcount.elemF },
@@ -159,8 +161,8 @@ function buildActivityLogHtml(data: ActivityLogData, autoPrint: boolean) {
 
     const participantCells = [];
     for (let i = 0; i < Math.max(data.participants.length, 6); i += 2) {
-        const a = data.participants[i]   || '';
-        const b = data.participants[i+1] || '';
+        const a = escapeText(data.participants[i] || '');
+        const b = escapeText(data.participants[i+1] || '');
         participantCells.push(`
             <tr>
                 <td style="border:0.5px solid #999;padding:5px 8px;text-align:center;color:#666;font-size:11px;">${i+1}</td>
@@ -178,23 +180,30 @@ function buildActivityLogHtml(data: ActivityLogData, autoPrint: boolean) {
 <style>
   @page { size: A4; margin: 15mm 15mm 15mm 15mm; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'Malgun Gothic', sans-serif; font-size: 13px; color: #111; }
+  body { width: 680px; margin: 0 auto; font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif; font-size: 13px; line-height: 1.55; letter-spacing: 0; color: #111; }
   h1 { font-size: 22px; font-weight: bold; text-align: center; margin-bottom: 4px; }
   h2 { font-size: 16px; font-weight: bold; text-align: center; margin-bottom: 16px; }
-  table { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
-  td, th { border: 0.5px solid #999; padding: 6px 10px; }
-  .label { background: #f3f3f3; color: #444; font-weight: bold; width: 80px; }
+  table { width: 100%; table-layout: fixed; border-collapse: collapse; margin-bottom: 12px; }
+  td, th { border: 1px solid #999; padding: 7px 8px; vertical-align: middle; overflow-wrap: anywhere; word-break: normal; }
+  tr { break-inside: avoid; }
+  .label { background: #f3f3f3; color: #444; font-weight: bold; }
+  .narrative { white-space: pre-wrap; line-height: 1.7; vertical-align: top; }
   .center { text-align: center; }
   .stamp { width: 64px; height: 64px; object-fit: contain; }
   .sig { width: 120px; height: 44px; object-fit: contain; }
   .approval { display: flex; justify-content: flex-end; margin-bottom: 16px; }
-  .approval-table td { text-align: center; font-size: 11px; padding: 4px 16px; }
+  .approval-table { width: 192px !important; }
+  .approval-table td { text-align: center; font-size: 12px; padding: 5px 8px; }
   .approval-img-cell { height: 72px; position: relative; }
-  .footer { margin-top: 8px; display: flex; justify-content: space-between; font-size: 11px; color: #666; }
+  .footer { margin-top: 8px; display: flex; gap: 16px; justify-content: space-between; font-size: 11px; color: #666; overflow-wrap: anywhere; }
+  .footer span { min-width: 0; }
+  img { max-width: 100%; vertical-align: middle; }
+  @media print { body { width: 100%; } }
   .auto-note { margin-top: 8px; padding: 6px 10px; background: #eff6ff; border: 0.5px solid #bfdbfe; border-radius: 4px; font-size: 11px; color: #1d4ed8; }
 </style>
 </head>
 <body>
+<main class="activity-document">
   <h1>창동청소년센터</h1>
   <h2>동아리 활동일지</h2>
 
@@ -218,32 +227,35 @@ function buildActivityLogHtml(data: ActivityLogData, autoPrint: boolean) {
 
   <!-- 기본 정보 -->
   <table>
+    <colgroup><col style="width:96px"><col><col style="width:68px"><col style="width:180px"></colgroup>
     <tr>
       <td class="label">동아리명</td>
-      <td style="font-weight:bold;">${data.userName}</td>
+      <td style="font-weight:bold;">${escapeText(data.userName)}</td>
       <td class="label" style="width:60px;">장 소</td>
-      <td>${data.roomName}</td>
+      <td>${escapeText(data.roomName)}</td>
     </tr>
     <tr>
       <td class="label">일 시</td>
-      <td colspan="3">${data.dateStr} &nbsp; ${data.timeStr}</td>
+      <td colspan="3">${escapeText(data.dateStr)} &nbsp; ${escapeText(data.timeStr)}</td>
     </tr>
   </table>
 
   <!-- 주요활동 -->
   <table>
+    <colgroup><col style="width:96px"><col></colgroup>
     <tr>
       <td class="label" style="vertical-align:top;">주요활동</td>
-      <td style="line-height:1.8;">${data.activityContent || '(입력 없음)'}</td>
+      <td class="narrative">${escapeText(data.activityContent || '(입력 없음)')}</td>
     </tr>
     <tr>
       <td class="label" style="vertical-align:top;">건의사항</td>
-      <td>${data.suggestion || '(없음)'}</td>
+      <td class="narrative">${escapeText(data.suggestion || '(없음)')}</td>
     </tr>
   </table>
 
   <!-- 인원 -->
   <table>
+    <colgroup><col style="width:96px"><col style="width:58px"><col><col><col><col><col style="width:96px"></colgroup>
     <tr>
       <td class="label center" rowspan="3" style="vertical-align:middle;">인 원<br>(명)</td>
       <td class="label center" style="font-size:11px;">구분</td>
@@ -263,6 +275,7 @@ function buildActivityLogHtml(data: ActivityLogData, autoPrint: boolean) {
 
   <!-- 참여인원 -->
   <table>
+    <colgroup><col style="width:96px"><col style="width:48px"><col><col style="width:48px"><col></colgroup>
     <tr>
       <td class="label center" rowspan="${participantCells.length+1}" style="vertical-align:middle;width:60px;">참여<br>인원</td>
       <td class="label center" style="font-size:11px;width:30px;">번호</td>
@@ -275,6 +288,7 @@ function buildActivityLogHtml(data: ActivityLogData, autoPrint: boolean) {
 
   <!-- 대표자 서명 -->
   <table>
+    <colgroup><col style="width:104px"><col><col style="width:80px"><col style="width:156px"></colgroup>
     <tr>
       <td class="label" style="width:80px;vertical-align:middle;">대표자 서명</td>
       <td style="padding:4px 10px;">
@@ -284,16 +298,16 @@ function buildActivityLogHtml(data: ActivityLogData, autoPrint: boolean) {
         }
       </td>
       <td class="label" style="width:80px;">기록일</td>
-      <td>${data.today}</td>
+      <td>${escapeText(data.today)}</td>
     </tr>
   </table>
 
   <div class="footer">
-    <span>기록자: ${data.participants[0] || data.userName}</span>
-    <span>출력일: ${data.today}</span>
+    <span>기록자: ${escapeText(data.participants[0] || data.userName)}</span>
+    <span>출력일: ${escapeText(data.today)}</span>
   </div>
   <div class="auto-note">이 문서는 창동청소년센터 대관 예약 시스템에서 자동 생성되었습니다.</div>
-
+</main>
   ${autoPrint ? '<script>window.onload = () => window.print();</script>' : ''}
 </body>
 </html>`;
@@ -347,7 +361,8 @@ export async function createActivityLogPdf(data: ActivityLogData) {
             });
         }));
 
-        const canvas = await html2canvas(iframeDocument.body, {
+        const documentElement = iframeDocument.querySelector<HTMLElement>('.activity-document')!;
+        const canvas = await html2canvas(documentElement, {
             scale: 2,
             backgroundColor: '#ffffff',
             logging: false,
@@ -357,10 +372,54 @@ export async function createActivityLogPdf(data: ActivityLogData) {
         const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4', compress: true });
         const maxWidth = 180;
         const maxHeight = 267;
-        const scale = Math.min(maxWidth / canvas.width, maxHeight / canvas.height);
-        const width = canvas.width * scale;
-        const height = canvas.height * scale;
-        pdf.addImage(canvas.toDataURL('image/png'), 'PNG', (210 - width) / 2, 15, width, height);
+        const mmPerPixel = maxWidth / canvas.width;
+        const pagePixels = Math.floor(maxHeight / mmPerPixel);
+        const bodyRect = documentElement.getBoundingClientRect();
+        const pixelRatio = canvas.width / bodyRect.width;
+        // Prefer table-row boundaries. For a row longer than a page, break between
+        // text lines instead, keeping the original readable font size.
+        const rowEnds = [...iframeDocument.querySelectorAll('tr')].map(row =>
+            Math.round((row.getBoundingClientRect().bottom - bodyRect.top) * pixelRatio) + 1);
+        const protectedSpans: { top: number; bottom: number }[] = [];
+        const addRect = (rect: DOMRect) => {
+            if (rect.height) protectedSpans.push({
+                top: Math.floor((rect.top - bodyRect.top) * pixelRatio) - 2,
+                bottom: Math.ceil((rect.bottom - bodyRect.top) * pixelRatio) + 2,
+            });
+        };
+        const walker = iframeDocument.createTreeWalker(iframeDocument.body, NodeFilter.SHOW_TEXT);
+        while (walker.nextNode()) {
+            if (!walker.currentNode.textContent?.trim()) continue;
+            const range = iframeDocument.createRange();
+            range.selectNodeContents(walker.currentNode);
+            [...range.getClientRects()].forEach(addRect);
+        }
+        [...iframeDocument.images].forEach(image => addRect(image.getBoundingClientRect()));
+        let offset = 0;
+        while (offset < canvas.height) {
+            let end = Math.min(offset + pagePixels, canvas.height);
+            if (end < canvas.height) {
+                const rowEnd = rowEnds.filter(y => y > offset + pagePixels * 0.55 && y <= end).pop();
+                if (rowEnd) end = rowEnd;
+                // Moving upward can encounter another line/image; settle in a gap.
+                let previous;
+                do {
+                    previous = end;
+                    for (const span of protectedSpans) {
+                        if (span.top < end && span.bottom > end && span.top > offset) end = span.top;
+                    }
+                } while (end !== previous);
+            }
+            const slice = document.createElement('canvas');
+            slice.width = canvas.width;
+            slice.height = end - offset;
+            slice.getContext('2d')!.drawImage(canvas, 0, offset, canvas.width, slice.height, 0, 0, canvas.width, slice.height);
+            if (offset) pdf.addPage();
+            pdf.addImage(slice.toDataURL('image/png'), 'PNG', 15, 15, maxWidth, slice.height * mmPerPixel);
+            slice.width = 0;
+            slice.height = 0;
+            offset = end;
+        }
 
         canvas.width = 0;
         canvas.height = 0;
