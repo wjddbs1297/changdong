@@ -1,10 +1,11 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { format } from 'date-fns';
 import { ko } from 'date-fns/locale';
 import { FileDown, Printer } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { dataService } from '../services/DataService';
-import { downloadActivityLogPdf, printActivityLog } from '../components/ActivityModal';
+import { createActivityLogPdf, downloadActivityLogPdf, printActivityLog } from '../components/ActivityModal';
+import { activityArchiveName, activityArchiveEntry, monthlySubmittedLogs, saveArchive } from '../utils/activityArchive';
 import type { ActivityLogData } from '../components/ActivityModal';
 import type { Booking, Room, User } from '../types';
 
@@ -34,6 +35,11 @@ export function AdminLogs() {
     const [clubFilter, setClubFilter] = useState('all');
     const [monthFilter, setMonthFilter] = useState('all');
     const [pdfBookingKey, setPdfBookingKey] = useState('');
+    const [zipProgress, setZipProgress] = useState<{ done: number; total: number } | null>(null);
+    const [zipMessage, setZipMessage] = useState('');
+    const exportBusy = useRef(false);
+    const cancelZip = useRef(false);
+    useEffect(() => () => { cancelZip.current = true; }, []);
 
     useEffect(() => {
         if (user?.role !== 'admin') return;
@@ -126,11 +132,53 @@ export function AdminLogs() {
         };
     };
 
+    const monthlyLogs = monthFilter === 'all' ? [] : monthlySubmittedLogs(matchingBookings, monthFilter);
+
+    const handleMonthlyDownload = async () => {
+        if (exportBusy.current || !monthlyLogs.length) return;
+        exportBusy.current = true;
+        cancelZip.current = false;
+        setZipMessage('');
+        const logs = [...monthlyLogs];
+        const folder = activityArchiveName(monthFilter, clubFilter === 'all' ? undefined :
+            clubOptions.find(club => club.id === clubFilter)?.name || clubFilter);
+        setZipProgress({ done: 0, total: logs.length });
+        try {
+            const { zipSync } = await import('fflate');
+            const files: Record<string, Uint8Array> = {};
+            for (let index = 0; index < logs.length; index++) {
+                if (cancelZip.current) break;
+                const pdf = await createActivityLogPdf(getActivityLogData(logs[index]));
+                if (cancelZip.current) break;
+                files[`${folder}/${activityArchiveEntry(logs[index], index)}`] = new Uint8Array(pdf.output('arraybuffer'));
+                setZipProgress({ done: index + 1, total: logs.length });
+                // Yield between documents so progress/cancel stay responsive on mobile.
+                await new Promise(resolve => setTimeout(resolve, 0));
+            }
+            if (cancelZip.current) {
+                setZipMessage('다운로드 생성을 취소했습니다.');
+                return;
+            }
+            // PDFs are already compressed; storing avoids redundant compression work.
+            const archive = zipSync(files, { level: 0 });
+            saveArchive(new Blob([new Uint8Array(archive)], { type: 'application/zip' }), `${folder}.zip`);
+            setZipMessage(`${logs.length}건을 ZIP으로 묶었습니다. 브라우저 다운로드 목록을 확인해주세요.`);
+        } catch (error) {
+            console.error(error);
+            setZipMessage('ZIP 생성에 실패했습니다. 파일은 일부만 저장되지 않습니다. 다시 시도하거나 동아리별로 나누어 내려받아주세요.');
+        } finally {
+            exportBusy.current = false;
+            setZipProgress(null);
+        }
+    };
+
     const handlePrint = (booking: Booking) => {
         printActivityLog(getActivityLogData(booking));
     };
 
     const handlePdfDownload = async (booking: Booking) => {
+        if (exportBusy.current) return;
+        exportBusy.current = true;
         const bookingKey = `${booking.id}-${booking.date}-${booking.startTime}`;
         setPdfBookingKey(bookingKey);
         try {
@@ -139,6 +187,7 @@ export function AdminLogs() {
             console.error(error);
             alert('PDF 저장 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.');
         } finally {
+            exportBusy.current = false;
             setPdfBookingKey('');
         }
     };
@@ -157,6 +206,7 @@ export function AdminLogs() {
                         동아리명
                         <select
                             value={clubFilter}
+                            disabled={!!zipProgress}
                             onChange={event => setClubFilter(event.target.value)}
                             className="mt-1 block w-full rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-sm font-normal text-gray-900"
                         >
@@ -170,6 +220,7 @@ export function AdminLogs() {
                         활동 월
                         <select
                             value={monthFilter}
+                            disabled={!!zipProgress}
                             onChange={event => setMonthFilter(event.target.value)}
                             className="mt-1 block w-full rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-sm font-normal text-gray-900"
                         >
@@ -185,12 +236,31 @@ export function AdminLogs() {
                         <button
                             type="button"
                             onClick={() => { setClubFilter('all'); setMonthFilter('all'); }}
-                            disabled={clubFilter === 'all' && monthFilter === 'all'}
+                            disabled={!!zipProgress || (clubFilter === 'all' && monthFilter === 'all')}
                             className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40"
                         >
                             필터 초기화
                         </button>
                     </div>
+                </div>
+                <div className="mb-5 rounded-xl border border-brand-100 bg-brand-50 p-4">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="min-w-0 text-sm text-brand-800">
+                            <p className="font-semibold">월별 활동일지 일괄 다운로드</p>
+                            <p className="mt-1 text-xs">{monthFilter === 'all' ? '위에서 활동 월을 선택해주세요.' : `선택한 조건의 제출 일지 ${monthlyLogs.length}건 · 미제출 제외`}</p>
+                            <p className="mt-1 text-xs">일지별 PDF를 ZIP 폴더로 저장합니다. 동아리를 선택하면 해당 동아리만 포함됩니다.</p>
+                        </div>
+                        <button type="button" onClick={handleMonthlyDownload}
+                            disabled={loading || !!zipProgress || !!pdfBookingKey || !monthlyLogs.length}
+                            className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg bg-brand-600 px-4 py-3 text-sm font-semibold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-40">
+                            <FileDown size={18} />{zipProgress ? `PDF 생성 중 ${zipProgress.done}/${zipProgress.total}` : '월별 ZIP 다운로드'}
+                        </button>
+                    </div>
+                    {zipProgress && <div className="mt-3 flex items-center gap-3">
+                        <progress className="h-2 min-w-0 flex-1" value={zipProgress.done} max={zipProgress.total} aria-label="활동일지 ZIP 생성 진행률" />
+                        <button type="button" className="shrink-0 text-sm underline" onClick={() => { cancelZip.current = true; }}>취소</button>
+                    </div>}
+                    <p role="status" className="mt-2 text-xs text-brand-800">{zipProgress ? `이 화면을 유지해주세요. ${zipProgress.total}건 중 ${zipProgress.done}건 완료` : zipMessage}</p>
                 </div>
                 {(clubFilter !== 'all' || monthFilter !== 'all') && (
                     <p className="mb-4 text-sm text-brand-700">선택한 조건의 활동일지를 표 맨 위로 정렬했습니다.</p>
@@ -257,7 +327,7 @@ export function AdminLogs() {
                                                         </button>
                                                         <button
                                                             onClick={() => handlePdfDownload(b)}
-                                                            disabled={!hasLog || isPdfSaving}
+                                                            disabled={!hasLog || !!pdfBookingKey || !!zipProgress}
                                                             className={`inline-flex items-center space-x-1 rounded-md px-3 py-1.5 text-sm ${
                                                                 hasLog
                                                                     ? 'bg-red-50 text-red-700 hover:bg-red-100'

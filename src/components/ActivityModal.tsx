@@ -310,7 +310,7 @@ export function printActivityLog(data: ActivityLogData) {
     win.document.close();
 }
 
-export async function downloadActivityLogPdf(data: ActivityLogData) {
+export async function createActivityLogPdf(data: ActivityLogData) {
     const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
         import('html2canvas'),
         import('jspdf'),
@@ -354,7 +354,7 @@ export async function downloadActivityLogPdf(data: ActivityLogData) {
             useCORS: true,
             windowWidth: 794,
         });
-        const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+        const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4', compress: true });
         const maxWidth = 180;
         const maxHeight = 267;
         const scale = Math.min(maxWidth / canvas.width, maxHeight / canvas.height);
@@ -362,12 +362,18 @@ export async function downloadActivityLogPdf(data: ActivityLogData) {
         const height = canvas.height * scale;
         pdf.addImage(canvas.toDataURL('image/png'), 'PNG', (210 - width) / 2, 15, width, height);
 
-        const filename = `${data.dateStr}_${data.userName}_활동일지`
-            .replace(/[\\/:*?"<>|]/g, '_');
-        pdf.save(`${filename}.pdf`);
+        canvas.width = 0;
+        canvas.height = 0;
+        return pdf;
     } finally {
         iframe.remove();
     }
+}
+
+export async function downloadActivityLogPdf(data: ActivityLogData) {
+    const pdf = await createActivityLogPdf(data);
+    const filename = `${data.dateStr}_${data.userName}_활동일지`.replace(/[\\/:*?"<>|]/g, '_');
+    pdf.save(`${filename}.pdf`);
 }
 
 // ── 메인 모달 ────────────────────────────────────────────
