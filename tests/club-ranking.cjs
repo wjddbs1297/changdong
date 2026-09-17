@@ -1,0 +1,16 @@
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const fs = require('node:fs');
+const ts = require('typescript');
+const context = {exports:{}};
+vm.runInNewContext(ts.transpileModule(fs.readFileSync(require('node:path').join(__dirname,'../src/utils/clubRanking.ts'),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,context);
+const {clubRankings} = context.exports;
+const users=['A','B','C','D','Daily','Admin','TEST','방과후 초등'].map(id=>({id,name:id,status:'Active',role:id==='Admin'?'admin':'user'}));
+const booking=(userId,n=3,date='2026-07-01')=>({id:'x',userId,date,endTime:'9:00',activityContent:'제출',headcount:{elemM:n}});
+const rows=clubRankings(users,[booking('A'),booking('A'),booking('B',7),booking('C',6),booking('Daily',100),booking('TEST',100),booking('방과후 초등',100),booking('D',100,'2027-07-01'),{...booking('D'),activityContent:''}],2026,0,Date.parse('2026-09-17T00:00:00Z'));
+assert.equal(rows.length,4);
+const a=rows.find(r=>r.id==='A'),b=rows.find(r=>r.id==='B'),c=rows.find(r=>r.id==='C'),d=rows.find(r=>r.id==='D');
+assert.equal(a.visits,2); assert.equal(a.participants,6); assert.equal(a.rankSum,3);assert.equal(a.rank,1);
+assert.equal(b.rank,1); assert.equal(c.rank,3); assert.equal(d.rank,0);
+assert.ok(clubRankings(users,[booking('A')],2026,8).every(r=>r.rank===0));
+console.log('PASS: visits not hours, cumulative headcount, ties, zero activity, year/month limits, future/unsubmitted and non-club exclusions.');

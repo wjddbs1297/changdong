@@ -1,0 +1,11 @@
+import React from 'react';
+import {createRoot} from 'react-dom/client';
+import {AuthProvider} from '../src/contexts/AuthContext';
+import {AdminRanking} from '../src/pages/AdminRanking';
+import {dataService} from '../src/services/DataService';
+import '../src/index.css';
+const clubs=['테스트A','테스트B','테스트C'].map(id=>({id,name:id,status:'Active' as const,role:'user' as const}));
+dataService.restoreSession=async()=>({user:{id:'Admin',role:'admin',status:'Active'},mustChangePin:false});
+dataService.getConfig=async()=>({users:clubs,rooms:[]});
+dataService.getAllBookings=async()=>[...['테스트A','테스트A','테스트B'].map((userId,i)=>({id:String(i),userId,roomId:'room',createdAt:'',date:'2026-07-01',startTime:'10:00',endTime:'11:00',activityContent:'연습 완료',headcount:{elemM:0,elemF:0,midM:0,midF:0,highM:i===2?7:3,highF:0,u24M:0,u24F:0}}))];
+createRoot(document.getElementById('root')!).render(<AuthProvider><AdminRanking/></AuthProvider>);
