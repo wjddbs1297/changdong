@@ -605,7 +605,7 @@ function getBookings(params) {
 
 function getHolidayCalendarForYear(year) {
     var cache = CacheService.getScriptCache();
-    var cacheKey = "kr_holidays_v1_" + year;
+    var cacheKey = "kr_public_holidays_v2_" + year;
     var cached = cache.get(cacheKey);
     if (cached) return JSON.parse(cached);
 
@@ -626,6 +626,7 @@ function getHolidayCalendarForYear(year) {
     var events = calendar.getEvents(new Date(year, 0, 1, 0, 0, 0), new Date(year + 1, 0, 1, 0, 0, 0));
     var byDate = {};
     for (var j = 0; j < events.length; j++) {
+        if (!isPublicHolidayEvent(events[j])) continue;
         var date = Utilities.formatDate(events[j].getStartTime(), TIMEZONE, "yyyy-MM-dd");
         var title = String(events[j].getTitle() || "공휴일");
         byDate[date] = byDate[date] ? byDate[date] + ", " + title : title;
@@ -656,8 +657,17 @@ function getKoreanHolidays(params) {
     return sendResponse(getKoreanHolidaysData(params));
 }
 
+function isPublicHolidayEvent(event) {
+    // The Google holiday calendar includes observances (e.g. Armed Forces Day).
+    // Its description, not the mere presence of an event, identifies public holidays.
+    var description = String(event.getDescription() || "").replace(/<[^>]*>/g, " ").trim();
+    return /^(공휴일|Public holiday|National holiday)(?:\s|$|[.,])/i.test(description);
+}
+
 function isMajorHolidayClosure(holidayName) {
-    return /설날|추석|Lunar New Year|Korean New Year|Chuseok/i.test(String(holidayName || ""));
+    var name = String(holidayName || "");
+    if (/대체|쉬는 날|substitute|in lieu|observed/i.test(name)) return false;
+    return /설날|추석|Lunar New Year|Korean New Year|Chuseok/i.test(name);
 }
 
 function getOperatingHoursForDate(dateStr) {

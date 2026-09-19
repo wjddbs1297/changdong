@@ -37,7 +37,7 @@ export function Dashboard() {
     const selectedYearHolidays = holidayYears[selectedYear];
     const holidayYearLoaded = Object.prototype.hasOwnProperty.call(holidayYears, selectedYear);
     const selectedHoliday = selectedYearHolidays?.holidays.find(item => item.date === selectedDateKey);
-    const isClosedHoliday = !!selectedHoliday && /설날|추석|Lunar New Year|Korean New Year|Chuseok/i.test(selectedHoliday.name);
+    const isClosedHoliday = !!selectedHoliday && !/대체|쉬는 날|substitute|in lieu|observed/i.test(selectedHoliday.name) && /설날|추석|Lunar New Year|Korean New Year|Chuseok/i.test(selectedHoliday.name);
     const isHolidaySchedule = isSun || !!selectedHoliday;
     const START_HOUR = isHolidaySchedule ? 10 : 9;
     const END_HOUR = isHolidaySchedule ? 17 : 21;
