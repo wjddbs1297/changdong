@@ -1,4 +1,4 @@
-import type { Booking, User, Room, Notice, ClubMember, HolidayInfo } from '../types';
+import type { Booking, User, Room, Notice, ClubMember, HolidayInfo, HistoricalPerformance } from '../types';
 
 export interface BookingRequest {
     userId: string;
@@ -25,6 +25,7 @@ export interface DataService {
     adminResetPin(userId: string, newPin: string): Promise<void>;
     getBookings(date: string): Promise<Booking[]>;
     getAllBookings(): Promise<Booking[]>;
+    getHistoricalPerformance(): Promise<HistoricalPerformance[]>;
     createBooking(request: BookingRequest): Promise<Booking>;
     getUserBookings(userId: string): Promise<Booking[]>;
     getPendingActivityReports(userId: string): Promise<Booking[]>;
@@ -238,6 +239,15 @@ export class ApiDataService implements DataService {
         const response = await protectedPost(url, { method: 'GET_PERFORMANCE_DATA', ...query });
         const json = await response.json();
         if (json.status !== 'success') throw new Error(json.message || '이용 실적을 불러오지 못했습니다.');
+        return json.data;
+    }
+
+    async getHistoricalPerformance(): Promise<HistoricalPerformance[]> {
+        const url = getApiUrl();
+        if (!url) return [];
+        const response = await protectedPost(url, { method: 'GET_HISTORICAL_PERFORMANCE' });
+        const json = await response.json();
+        if (json.status !== 'success') throw new Error(json.message || '이관 실적을 불러오지 못했습니다.');
         return json.data;
     }
 

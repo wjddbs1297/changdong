@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from 'react';
 import { BarChart3, CalendarDays, Clock3 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { dataService } from '../services/DataService';
-import type { Booking, HolidayInfo, Room, User } from '../types';
+import type { Booking, HolidayInfo, Room, User, HistoricalPerformance } from '../types';
+import { historicalInPeriod, coveredByHistorical } from '../utils/historicalPerformance';
+import { rankingClubId } from '../utils/clubRanking';
 
 type PeriodMode = 'week' | 'month' | 'quarter' | 'year';
 type Basis = 'ended' | 'completed';
@@ -18,6 +20,8 @@ type StatRow = {
     male: number;
     female: number;
     participants: number;
+    historicalCount: number;
+    missingVisits: boolean;
 };
 
 const SLOT_GROUPS: Array<{ day: string; morning: SlotKey; afternoon: SlotKey; className: string }> = [
@@ -101,6 +105,7 @@ export function AdminStats() {
     const { user } = useAuth();
     const now = new Date();
     const [bookings, setBookings] = useState<Booking[]>([]);
+    const [historical, setHistorical] = useState<HistoricalPerformance[]>([]);
     const [users, setUsers] = useState<User[]>([]);
     const [rooms, setRooms] = useState<Room[]>([]);
     const [holidays, setHolidays] = useState<HolidayInfo[]>([]);
@@ -133,18 +138,24 @@ export function AdminStats() {
     useEffect(() => {
         if (user?.role !== 'admin') return;
         setLoading(true);
-        dataService.getPerformanceData({ mode, year, month, quarter, weekStart: selectedWeek.start, weekEnd: selectedWeek.end, basis }).then(result => {
+        let cancelled = false;
+        Promise.all([dataService.getPerformanceData({ mode, year, month, quarter, weekStart: selectedWeek.start, weekEnd: selectedWeek.end, basis }), dataService.getHistoricalPerformance()]).then(([result, history]) => {
+            if (cancelled) return;
+            setHistorical(history);
             setBookings(result.bookings);
             setHolidays(result.holidays);
             setAvailableYears(result.availableYears);
             setLoadError('');
             setHolidayWarning(result.available ? '' : '한국 공휴일을 불러오지 못해 현재는 일요일만 공휴일로 분류했습니다. Apps Script 캘린더 권한을 확인해주세요.');
         }).catch(error => {
+            if (cancelled) return;
             console.error(error);
             setBookings([]);
+            setHistorical([]);
             setHolidays([]);
             setLoadError(error instanceof Error ? error.message : '이용 실적을 불러오지 못했습니다.');
-        }).finally(() => setLoading(false));
+        }).finally(() => { if (!cancelled) setLoading(false); });
+        return () => { cancelled = true; };
     }, [user, mode, year, month, quarter, selectedWeek.start, selectedWeek.end, basis]);
 
     const years = [...new Set<number>([now.getFullYear(), ...availableYears])].sort((a, b) => b - a);
@@ -152,21 +163,38 @@ export function AdminStats() {
     const holidayDates = useMemo(() => new Set(holidays.map(item => item.date)), [holidays]);
     const holidayNames = useMemo(() => new Map(holidays.map(item => [item.date, item.name])), [holidays]);
     const roomNames = useMemo(() => new Map(rooms.map(room => [room.id, room.name])), [rooms]);
+    const periodHistory = useMemo(() => historicalInPeriod(historical, mode, year, month, quarter).filter(row => !isDaily(row.userId)), [historical, mode, year, month, quarter]);
 
     const rows = useMemo<StatRow[]>(() => {
         const clubUsers = users
             .filter(item => item.role !== 'admin' && item.status === 'Active' && !isDaily(item.id))
             .sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id, 'ko'));
-        const result = clubUsers.map(item => ({
+        const result: StatRow[] = clubUsers.map(item => ({
             userId: item.id, name: item.name || item.id, cells: EMPTY_CELLS(),
-            totalVisits: 0, totalHours: 0, male: 0, female: 0, participants: 0,
+            totalVisits: 0, totalHours: 0, male: 0, female: 0, participants: 0, historicalCount: 0, missingVisits: false,
         }));
-        const byId = new Map(result.map(item => [item.userId.trim().toLowerCase(), item]));
+        const byId = new Map(result.map(item => [rankingClubId(item.userId), item]));
+
+        periodHistory.forEach(item => {
+            let row = byId.get(rankingClubId(item.userId));
+            if (!row) {
+                row = { userId: item.userId, name: item.sourceName, cells: EMPTY_CELLS(), totalVisits: 0, totalHours: 0, male: 0, female: 0, participants: 0, historicalCount: 0, missingVisits: false };
+                result.push(row);
+                byId.set(rankingClubId(item.userId), row);
+            }
+            row.totalVisits += item.visits ?? 0;
+            row.male += item.male;
+            row.female += item.female;
+            row.participants += item.male + item.female;
+            row.historicalCount++;
+            row.missingVisits ||= item.visits === null;
+        });
 
         bookings.forEach(booking => {
+            if (coveredByHistorical(booking, periodHistory)) return;
             if (!isInPeriod(booking.date, mode, year, month, quarter, selectedWeek.start, selectedWeek.end) || !hasEnded(booking)) return;
             if (basis === 'completed' && !isCompleted(booking)) return;
-            const row = byId.get(booking.userId.trim().toLowerCase());
+            const row = byId.get(rankingClubId(booking.userId));
             if (!row) return;
             const key = slotFor(booking, holidayDates);
             const hours = bookingHours(booking);
@@ -180,10 +208,10 @@ export function AdminStats() {
             row.participants += genderCounts.male + genderCounts.female;
         });
         return result;
-    }, [users, bookings, holidayDates, mode, year, month, quarter, selectedWeek.start, selectedWeek.end, basis]);
+    }, [users, bookings, holidayDates, mode, year, month, quarter, selectedWeek.start, selectedWeek.end, basis, periodHistory]);
 
     const totals = useMemo(() => rows.reduce((acc, row) => ({
-        clubs: acc.clubs + (row.totalVisits > 0 ? 1 : 0),
+        clubs: acc.clubs + (row.totalVisits > 0 || row.participants > 0 ? 1 : 0),
         visits: acc.visits + row.totalVisits,
         hours: acc.hours + row.totalHours,
         male: acc.male + row.male,
@@ -259,6 +287,13 @@ export function AdminStats() {
                 <div className="rounded-2xl border border-gray-100 bg-white p-5 shadow-sm"><CalendarDays className="mb-3 text-brand-600" size={22} /><div className="text-sm text-gray-500">실제 활동인원</div><div className="mt-1 text-2xl font-bold">{totals.participants}명</div><div className="mt-1 text-xs text-gray-500">남 {totals.male}명 · 여 {totals.female}명</div></div>
             </section>
 
+            {periodHistory.length > 0 && <section className="rounded-2xl border bg-amber-50 p-4 text-sm text-amber-950">
+                <p>합계에 2026년 1~6월 엑셀 본표 실적을 포함했습니다. 이용 시간·예약 시간대별 횟수는 원본에 없어 이관 실적을 포함하지 않습니다. 횟수 미기재 항목은 인원만 합산하며, 총 이용 횟수는 확인된 횟수입니다.</p>
+                <details className="mt-3"><summary className="cursor-pointer font-bold">이관한 월별 인원 상세 보기</summary><p className="my-2">원본 기준: 평일 오전 14시 이전·오후 14시 이후 / 공휴일은 오전·오후 미구분. 아래 숫자는 횟수가 아닌 연인원입니다. 각 칸은 남 / 여입니다.</p>
+                    <div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left"><thead><tr>{['월','동아리','평일 오전','평일 오후','공휴일','토요일 오전','토요일 오후','횟수','인원 합계'].map(label => <th className="p-2" key={label}>{label}</th>)}</tr></thead><tbody>{periodHistory.map(item => <tr className="border-t" key={`${item.month}/${item.userId}`}><td className="p-2">{item.month}월</td><td className="p-2">{item.sourceName}</td>{[0,2,4,6,8].map(i => <td className="p-2" key={i}>{item.slots[i]} / {item.slots[i+1]}</td>)}<td className="p-2">{item.visits === null ? '미기재' : `${item.visits}회`}</td><td className="p-2">{item.male + item.female}명</td></tr>)}</tbody></table></div>
+                </details>
+            </section>}
+            {mode === 'week' && year === 2026 && <p className="text-sm text-gray-500">1~6월 이관 실적은 날짜가 없는 월 합계이므로 주간 집계에는 배분하지 않습니다.</p>}
             <section className="overflow-hidden rounded-2xl border border-gray-100 bg-white shadow-sm">
                 <div className="border-b border-gray-100 px-6 py-4 text-sm text-gray-500">오전은 시작 시각이 13:00 이전인 예약입니다. 공휴일은 일요일을 포함하며 토요일과 겹치면 공휴일로 집계합니다. 남녀 인원은 제출된 활동일지의 실제 인원만 합산합니다.</div>
                 {loading ? <div className="py-16 text-center text-gray-500">데이터를 불러오는 중...</div> : (
@@ -286,7 +321,7 @@ export function AdminStats() {
                                         <td key={group.morning} className="border-l border-gray-100 bg-gray-50/30 px-2 py-1 text-center">{renderCell(row, group.morning, `${group.day} 오전`)}</td>,
                                         <td key={group.afternoon} className="bg-gray-50/30 px-2 py-1 text-center">{renderCell(row, group.afternoon, `${group.day} 오후`)}</td>,
                                     ])}
-                                    <td className="border-l border-gray-100 px-4 py-3 text-center"><div className="font-bold">{row.totalVisits}회</div><div className="text-xs text-gray-500">{row.totalHours}시간</div></td>
+                                    <td className="border-l border-gray-100 px-4 py-3 text-center"><div className="font-bold">{row.totalVisits}회{row.missingVisits && ' + 미기재'}</div><div className="text-xs text-gray-500">{row.totalHours}시간{row.historicalCount > 0 && ' (이관분 제외)'}</div>{row.historicalCount > 0 && <div className="text-xs text-amber-700">월별 이관분 포함</div>}</td>
                                     <td className="border-l border-gray-100 bg-emerald-50/40 px-3 py-3 text-center font-semibold text-blue-700">{row.male}명</td>
                                     <td className="bg-emerald-50/40 px-3 py-3 text-center font-semibold text-rose-600">{row.female}명</td>
                                     <td className="bg-emerald-50/40 px-3 py-3 text-center font-bold text-gray-900">{row.participants}명</td>

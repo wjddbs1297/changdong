@@ -63,6 +63,19 @@ export interface HolidayInfo {
     name: string;
 }
 
+// Monthly source totals, not reservations: no invented dates, hours or school levels.
+export interface HistoricalPerformance {
+    year: number;
+    month: number;
+    userId: string;
+    sourceName: string;
+    visits: number | null;
+    male: number;
+    female: number;
+    slots: number[]; // weekday AM M/F, weekday PM M/F, holiday M/F, Saturday AM M/F, Saturday PM M/F
+    source: string;
+}
+
 export interface Notice {
     id: string;
     title: string;

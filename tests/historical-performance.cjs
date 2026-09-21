@@ -1,0 +1,32 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const ts = require('typescript');
+const path = require('node:path');
+function load(file, deps = {}) {
+    const c = {exports: {}, require: name => deps[name]};
+    vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.join(__dirname, '../src/utils/', file), 'utf8'), {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText, c);
+    return c.exports;
+}
+const ranking = load('clubRanking.ts');
+const period = load('historicalPerformance.ts', {'./clubRanking':ranking});
+const h = [{year:2026,month:1,userId:'ABLE2026',sourceName:'ABLE',visits:null,male:0,female:2,slots:[0,0,0,2,0,0,0,0,0,0],source:'1월!B17:O17'}, {year:2026,month:2,userId:'ABLE2026',visits:5,male:0,female:18}];
+assert.equal(period.historicalInPeriod(h,'week',2026,1,1).length,0);
+assert.equal(period.historicalInPeriod(h,'quarter',2026,1,1).length,2);
+assert.equal(period.historicalInPeriod(h,'month',2026,2,1).length,1);
+assert.equal(period.historicalInPeriod(h,'year',2027,1,1).length,0);
+const user = {id:'ABLE2026',name:'ABLE',status:'Active',role:'user'};
+const book = {userId:'able',date:'2026-01-01',endTime:'15:00',activityContent:'submitted',headcount:{elemF:99}};
+assert.equal(period.coveredByHistorical(book,h),true);
+const july = {...book,date:'2026-07-01',headcount:{elemF:3}};
+const row=ranking.clubRankings([user],[book,july],2026,0,Date.parse('2026-09-21'),h)[0];
+assert.equal(row.visits,6); assert.equal(row.participants,23); assert.equal(row.missingVisits,true);
+assert.equal(ranking.clubRankings([user],[july],2026,7,Date.now(),h)[0].participants,3);
+const gas={}; vm.createContext(gas); vm.runInContext(fs.readFileSync(path.join(__dirname,'../GAS_FINAL_DEPLOY.js'),'utf8'),gas);
+const source=[[2026,1,'ABLE2026','ABLE','',0,2,0,0,0,2,0,0,0,0,0,0,'source']];
+gas.SpreadsheetApp={openById:()=>({getSheetByName:()=>({getLastRow:()=>source.length+1,getRange:()=>({getValues:()=>source})})})};
+assert.equal(gas.getHistoricalPerformance()[0].visits,null);
+source.push(source[0]); assert.throws(()=>gas.getHistoricalPerformance(),/중복/); source.pop();
+source[0][1]=7; assert.throws(()=>gas.getHistoricalPerformance(),/기간/); source[0][1]=1;
+source[0][5]=3; assert.throws(()=>gas.getHistoricalPerformance(),/합계/);
+console.log('PASS: historical months/quarters/years, weekly exclusion, aliases, duplicate avoidance, unknown counts, July preservation and server validation');

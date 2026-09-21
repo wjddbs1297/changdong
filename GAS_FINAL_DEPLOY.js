@@ -297,6 +297,11 @@ function handleRequest(e) {
             return getKoreanHolidays(params);
         }
 
+        if (method === "GET_HISTORICAL_PERFORMANCE") {
+            if (session.user.role !== "admin") return sendResponse({ message: "관리자 권한이 필요합니다." }, false);
+            return sendResponse(getHistoricalPerformance());
+        }
+
         if (method === "GET_PERFORMANCE_DATA") {
             if (session.user.role !== "admin") return sendResponse({ message: "관리자 권한이 필요합니다." }, false);
             return getPerformanceData(params);
@@ -635,6 +640,29 @@ function getHolidayCalendarForYear(year) {
     var result = { available: true, holidays: holidays };
     cache.put(cacheKey, JSON.stringify(result), 21600);
     return result;
+}
+
+function getHistoricalPerformance() {
+    var sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName("과거월별실적");
+    if (!sheet || sheet.getLastRow() < 2) return [];
+    var rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 18).getValues();
+    var seen = {};
+    return rows.filter(function (row) { return row[0] !== ""; }).map(function (row) {
+        var year = Number(row[0]), month = Number(row[1]), userId = String(row[2]).trim();
+        var key = year + "/" + month + "/" + userId.toLowerCase();
+        if (year !== 2026 || month < 1 || month > 6 || month % 1 || !userId || seen[key]) throw new Error("과거월별실적의 기간 또는 중복 행을 확인해주세요.");
+        seen[key] = true;
+        function count(value) {
+            var result = Number(value);
+            if (!isFinite(result) || result < 0 || result % 1) throw new Error("과거월별실적의 인원·횟수를 확인해주세요.");
+            return result;
+        }
+        var slots = row.slice(7, 17).map(count);
+        var male = count(row[5]), female = count(row[6]);
+        if (male !== slots.filter(function (_, i) { return i % 2 === 0; }).reduce(function (a,b) { return a+b; },0) ||
+            female !== slots.filter(function (_, i) { return i % 2 === 1; }).reduce(function (a,b) { return a+b; },0)) throw new Error("과거월별실적의 남녀 합계를 확인해주세요.");
+        return { year: year, month: month, userId: userId, sourceName: String(row[3]), visits: row[4] === "" ? null : count(row[4]), male: male, female: female, slots: slots, source: String(row[17]) };
+    });
 }
 
 function getKoreanHolidaysData(params) {
