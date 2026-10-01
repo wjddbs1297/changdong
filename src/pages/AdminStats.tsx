@@ -2,9 +2,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { BarChart3, CalendarDays, Clock3 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { dataService } from '../services/DataService';
+import type { AdditionalPerformance } from '../services/DataService';
 import type { Booking, HolidayInfo, Room, User, HistoricalPerformance } from '../types';
 import { historicalInPeriod, coveredByHistorical } from '../utils/historicalPerformance';
 import { rankingClubId } from '../utils/clubRanking';
+import { bookingGenderCounts, slotGenderTotals, GENDER_SLOTS } from '../utils/slotGenderTotals';
 
 type PeriodMode = 'week' | 'month' | 'quarter' | 'year';
 type Basis = 'ended' | 'completed';
@@ -57,14 +59,6 @@ function moveWeek(anchor: string, amount: number) {
     return dateKey(parsed);
 }
 
-function bookingGenderCounts(booking: Booking) {
-    if (!isCompleted(booking) || !booking.headcount) return { male: 0, female: 0 };
-    return {
-        male: booking.headcount.elemM + booking.headcount.midM + booking.headcount.highM + booking.headcount.u24M,
-        female: booking.headcount.elemF + booking.headcount.midF + booking.headcount.highF + booking.headcount.u24F,
-    };
-}
-
 function hasEnded(booking: Booking) {
     const end = new Date(`${booking.date}T${booking.endTime || '00:00'}:00`);
     return !Number.isNaN(end.getTime()) && end.getTime() <= Date.now();
@@ -106,6 +100,8 @@ export function AdminStats() {
     const now = new Date();
     const [bookings, setBookings] = useState<Booking[]>([]);
     const [historical, setHistorical] = useState<HistoricalPerformance[]>([]);
+    const [additional, setAdditional] = useState<AdditionalPerformance[]>([]);
+    const [refreshVersion, setRefreshVersion] = useState(0);
     const [users, setUsers] = useState<User[]>([]);
     const [rooms, setRooms] = useState<Room[]>([]);
     const [holidays, setHolidays] = useState<HolidayInfo[]>([]);
@@ -143,6 +139,7 @@ export function AdminStats() {
             if (cancelled) return;
             setHistorical(history);
             setBookings(result.bookings);
+            setAdditional(result.additional);
             setHolidays(result.holidays);
             setAvailableYears(result.availableYears);
             setLoadError('');
@@ -152,11 +149,12 @@ export function AdminStats() {
             console.error(error);
             setBookings([]);
             setHistorical([]);
+            setAdditional([]);
             setHolidays([]);
             setLoadError(error instanceof Error ? error.message : '이용 실적을 불러오지 못했습니다.');
         }).finally(() => { if (!cancelled) setLoading(false); });
         return () => { cancelled = true; };
-    }, [user, mode, year, month, quarter, selectedWeek.start, selectedWeek.end, basis]);
+    }, [user, mode, year, month, quarter, selectedWeek.start, selectedWeek.end, basis, refreshVersion]);
 
     const years = [...new Set<number>([now.getFullYear(), ...availableYears])].sort((a, b) => b - a);
 
@@ -218,6 +216,14 @@ export function AdminStats() {
         female: acc.female + row.female,
         participants: acc.participants + row.participants,
     }), { clubs: 0, visits: 0, hours: 0, male: 0, female: 0, participants: 0 }), [rows]);
+
+    const additionalTotals = additional.reduce((sum, row) => ({ male: sum.male + row.male, female: sum.female + row.female }), { male: 0, female: 0 });
+    const genderTotals = useMemo(() => slotGenderTotals(rows.map(row => row.cells), periodHistory, additional, holidayDates), [rows, periodHistory, additional, holidayDates]);
+    const genderGrandTotal = GENDER_SLOTS.reduce((sum, key) => ({ male: sum.male + genderTotals[key].male, female: sum.female + genderTotals[key].female }), { male: 0, female: 0 });
+    const holidayGenderTotal = {
+        male: genderTotals.holidayMorning.male + genderTotals.holidayAfternoon.male + genderTotals.holidayUnclassified.male,
+        female: genderTotals.holidayMorning.female + genderTotals.holidayAfternoon.female + genderTotals.holidayUnclassified.female,
+    };
 
     if (user?.role !== 'admin') return <div className="p-8 text-center text-red-500">관리자 전용 페이지입니다.</div>;
 
@@ -284,7 +290,33 @@ export function AdminStats() {
                 <div className="rounded-2xl border border-gray-100 bg-white p-5 shadow-sm"><CalendarDays className="mb-3 text-brand-600" size={22} /><div className="text-sm text-gray-500">이용 동아리</div><div className="mt-1 text-2xl font-bold">{totals.clubs}개</div></div>
                 <div className="rounded-2xl border border-gray-100 bg-white p-5 shadow-sm"><BarChart3 className="mb-3 text-brand-600" size={22} /><div className="text-sm text-gray-500">총 이용 횟수</div><div className="mt-1 text-2xl font-bold">{totals.visits}회</div></div>
                 <div className="rounded-2xl border border-gray-100 bg-white p-5 shadow-sm"><Clock3 className="mb-3 text-brand-600" size={22} /><div className="text-sm text-gray-500">총 이용 시간</div><div className="mt-1 text-2xl font-bold">{totals.hours}시간</div></div>
-                <div className="rounded-2xl border border-gray-100 bg-white p-5 shadow-sm"><CalendarDays className="mb-3 text-brand-600" size={22} /><div className="text-sm text-gray-500">실제 활동인원</div><div className="mt-1 text-2xl font-bold">{totals.participants}명</div><div className="mt-1 text-xs text-gray-500">남 {totals.male}명 · 여 {totals.female}명</div></div>
+                <div className="rounded-2xl border border-gray-100 bg-white p-5 shadow-sm"><CalendarDays className="mb-3 text-brand-600" size={22} /><div className="text-sm text-gray-500">실제 활동인원 (추가 실적 포함)</div><div className="mt-1 text-2xl font-bold">{totals.participants + additionalTotals.male + additionalTotals.female}명</div><div className="mt-1 text-xs text-gray-500">남 {totals.male + additionalTotals.male}명 · 여 {totals.female + additionalTotals.female}명</div></div>
+            </section>
+
+            <section className="min-w-0 rounded-2xl border border-gray-100 bg-white p-4 sm:p-6 shadow-sm" aria-labelledby="slot-gender-title">
+                <h2 id="slot-gender-title" className="text-lg font-bold text-gray-900">요일·시간대별 남녀 인원 합계</h2>
+                <p className="mt-2 text-sm text-gray-500">선택한 기간의 동아리와 추가 실적 연인원입니다. 같은 사람이 여러 번 활동하면 활동마다 합산합니다.</p>
+                <p className="mt-1 text-xs text-gray-500">사이트 기록은 시작 시각 13시 이전을 오전으로 분류합니다. 일요일과 공휴일이 토요일보다 우선합니다. 미제출 일지 인원은 제외합니다.</p>
+                {periodHistory.length > 0 && <p className="mt-2 text-sm text-amber-800">1~6월 이관분은 원본 시간대 구분을 유지해 합산합니다(평일 오전 기준 14시 이전). 공휴일은 이관분과 사이트 기록을 합쳐 남녀 인원만 표시합니다.</p>}
+                {loading ? <p className="py-6 text-center text-gray-500" role="status">인원 합계를 불러오는 중...</p> : loadError ? <p className="py-4 text-red-700">자료를 불러오지 못해 합계를 표시할 수 없습니다.</p> : <div className="mt-4 overflow-x-auto">
+                    <table className="w-full min-w-[320px] text-sm text-center">
+                        <thead className="bg-gray-50"><tr><th scope="col" className="p-3 text-left">구분</th><th scope="col" className="p-3 text-blue-700">남자 합계</th><th scope="col" className="p-3 text-rose-600">여자 합계</th><th scope="col" className="p-3">전체</th></tr></thead>
+                        <tbody className="divide-y divide-gray-100">
+                            {SLOT_GROUPS.filter(group => group.day !== '공휴일').flatMap(group => ([['오전', group.morning], ['오후', group.afternoon]] as const).map(([label, key]) => <tr key={key}><th scope="row" className={`p-3 text-left font-medium ${group.className}`}>{group.day} {label}</th><td className="p-3 text-blue-700">{genderTotals[key].male}명</td><td className="p-3 text-rose-600">{genderTotals[key].female}명</td><td className="p-3 font-semibold">{genderTotals[key].male + genderTotals[key].female}명</td></tr>))}
+                            <tr><th scope="row" className="bg-rose-50 p-3 text-left font-medium text-rose-800">공휴일</th><td className="p-3 text-blue-700">{holidayGenderTotal.male}명</td><td className="p-3 text-rose-600">{holidayGenderTotal.female}명</td><td className="p-3 font-semibold">{holidayGenderTotal.male + holidayGenderTotal.female}명</td></tr>
+                            {([['평일', 'weekdayUnclassified'], ['토요일', 'saturdayUnclassified']] as const).filter(([, key]) => genderTotals[key].male + genderTotals[key].female > 0).map(([label, key]) => <tr key={key}><th scope="row" className="p-3 text-left font-medium">{label} 시간대 미구분</th><td className="p-3">{genderTotals[key].male}명</td><td className="p-3">{genderTotals[key].female}명</td><td className="p-3">{genderTotals[key].male + genderTotals[key].female}명</td></tr>)}
+                        </tbody>
+                        <tfoot className="border-t bg-gray-50 font-bold"><tr><th scope="row" className="p-3 text-left">전체 합계</th><td className="p-3 text-blue-700">{genderGrandTotal.male}명</td><td className="p-3 text-rose-600">{genderGrandTotal.female}명</td><td className="p-3">{genderGrandTotal.male + genderGrandTotal.female}명</td></tr></tfoot>
+                    </table>
+                </div>}
+            </section>
+
+            <section className="rounded-2xl border border-gray-100 bg-white p-4 sm:p-6">
+                <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-lg font-bold">추가 실적</h2><button disabled={loading} onClick={() => setRefreshVersion(value => value + 1)} className="rounded-lg border px-4 py-2 text-sm disabled:opacity-50">{loading ? '불러오는 중...' : '실적 새로고침'}</button></div>
+                <p className="mt-2 text-sm text-gray-500">‘추가 실적’ 시트 입력분은 인원 합계에만 포함합니다. 이용 횟수·시간·동아리 수·랭킹에는 포함하지 않습니다. 기존 동아리 일지에 있는 인원을 중복 입력하지 마세요.</p>
+                <p className="mt-1 text-sm text-gray-500">학교명은 학교 협조실적에만 필수입니다. 미래 날짜는 제외하며, 추가 실적은 활동일지 완료 여부와 무관하게 두 집계 기준 모두에 포함합니다.</p>
+                {!loading && !loadError && <><div className="mt-3 flex flex-wrap gap-4 text-sm">{(['데일리', '학교 협조실적'] as const).map(category => { const entries = additional.filter(item => item.category === category); return <p key={category}><strong>{category}</strong> · 남 {entries.reduce((n, r) => n + r.male, 0)}명 · 여 {entries.reduce((n, r) => n + r.female, 0)}명</p>; })}</div>
+                    <details className="mt-4"><summary className="cursor-pointer text-sm font-semibold">날짜별 입력 내역 ({additional.length}건)</summary><div className="mt-2 overflow-x-auto"><table className="min-w-[650px] w-full text-sm"><thead><tr>{['날짜', '구분', '학교', '시간대', '남', '여'].map(label => <th key={label} className="p-2 text-left">{label}</th>)}</tr></thead><tbody>{additional.map(item => <tr key={item.sourceRow} className="border-t"><td className="p-2">{item.date}</td><td className="p-2">{item.category}</td><td className="p-2">{item.school || '—'}</td><td className="p-2">{item.time}</td><td className="p-2">{item.male}명</td><td className="p-2">{item.female}명</td></tr>)}</tbody></table></div></details></>}
             </section>
 
             {periodHistory.length > 0 && <section className="rounded-2xl border bg-amber-50 p-4 text-sm text-amber-950">

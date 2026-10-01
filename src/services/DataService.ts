@@ -26,6 +26,7 @@ export interface DataService {
     getBookings(date: string): Promise<Booking[]>;
     getAllBookings(): Promise<Booking[]>;
     getHistoricalPerformance(): Promise<HistoricalPerformance[]>;
+    getMonthlyHighlight(): Promise<MonthlyHighlight>;
     createBooking(request: BookingRequest): Promise<Booking>;
     getUserBookings(userId: string): Promise<Booking[]>;
     getPendingActivityReports(userId: string): Promise<Booking[]>;
@@ -37,6 +38,11 @@ export interface DataService {
 
 export interface Config { users: User[]; rooms: Room[]; maxClubAccounts?: number; clubAccountCount?: number; }
 export interface AuthResult { user: User; mustChangePin: boolean; }
+export interface MonthlyHighlight {
+    month: string;
+    updatedAt: string;
+    clubs: { name: string; rank: number; visits: number; participants: number }[];
+}
 
 export interface ActivityReportRequest {
     bookingId: string;
@@ -70,7 +76,19 @@ export interface PerformanceQuery {
 
 export interface PerformanceDataResult extends HolidayCalendarResult {
     bookings: Booking[];
+    additional: AdditionalPerformance[];
     availableYears: number[];
+}
+
+export interface AdditionalPerformance {
+    date: string;
+    category: '데일리' | '학교 협조실적';
+    school: string;
+    time: '오전' | '오후' | '미구분';
+    male: number;
+    female: number;
+    note: string;
+    sourceRow: number;
 }
 
 let configCache: Config | null = null;
@@ -82,6 +100,15 @@ const protectedPost = (url: string, data: Record<string, unknown>) => fetch(url,
 });
 
 export class ApiDataService implements DataService {
+    async getMonthlyHighlight(): Promise<MonthlyHighlight> {
+        const url = getApiUrl();
+        if (!url) throw new Error('API configuration missing');
+        const response = await protectedPost(url, { method: 'GET_MONTHLY_HIGHLIGHT' });
+        const json = await response.json();
+        if (json.status !== 'success') throw new Error(json.message || '우수 동아리를 불러오지 못했습니다.');
+        return json.data;
+    }
+
     async getConfig(): Promise<Config> {
         if (configCache) return configCache;
         const url = getApiUrl();
@@ -235,10 +262,11 @@ export class ApiDataService implements DataService {
 
     async getPerformanceData(query: PerformanceQuery): Promise<PerformanceDataResult> {
         const url = getApiUrl();
-        if (!url) return { bookings: [], holidays: [], available: false, availableYears: [] };
+        if (!url) return { bookings: [], additional: [], holidays: [], available: false, availableYears: [] };
         const response = await protectedPost(url, { method: 'GET_PERFORMANCE_DATA', ...query });
         const json = await response.json();
         if (json.status !== 'success') throw new Error(json.message || '이용 실적을 불러오지 못했습니다.');
+        if (!Array.isArray(json.data.additional)) throw new Error('추가 실적을 읽으려면 최신 Apps Script 배포가 필요합니다.');
         return json.data;
     }
 

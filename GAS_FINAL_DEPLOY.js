@@ -297,6 +297,10 @@ function handleRequest(e) {
             return getKoreanHolidays(params);
         }
 
+        if (method === "GET_MONTHLY_HIGHLIGHT") {
+            return sendResponse(getMonthlyHighlight());
+        }
+
         if (method === "GET_HISTORICAL_PERFORMANCE") {
             if (session.user.role !== "admin") return sendResponse({ message: "관리자 권한이 필요합니다." }, false);
             return sendResponse(getHistoricalPerformance());
@@ -488,16 +492,20 @@ function bookingDayCacheKey(date) {
 }
 
 function clearBookingDayCache(date) {
-    if (date) CacheService.getScriptCache().remove(bookingDayCacheKey(date));
+    if (date) {
+        var cache = CacheService.getScriptCache();
+        cache.remove(bookingDayCacheKey(date));
+        cache.remove(bookingDayCacheKey(date) + "_light");
+    }
 }
 
-function getBookingRows(sheet, targetDate) {
+function getBookingRows(sheet, targetDate, lightweight) {
     if (!targetDate) return repairImportedBookingIdentity(sheet);
     var cache = CacheService.getScriptCache();
-    var key = bookingDayCacheKey(targetDate);
+    var key = bookingDayCacheKey(targetDate) + (lightweight ? "_light" : "");
     var cached = cache.get(key);
     if (cached) return JSON.parse(cached);
-    var allRows = sheet.getDataRange().getValues();
+    var allRows = lightweight ? sheet.getRange(1, 1, Math.max(1, sheet.getLastRow()), 7).getValues() : sheet.getDataRange().getValues();
     var rows = [];
     for (var i = 1; i < allRows.length; i++) {
         if (formatDateSafe(allRows[i][3]) === targetDate) {
@@ -558,7 +566,8 @@ function getBookingsData(params) {
     var sheet = ss.getSheetByName("예약내역");
     if (!sheet) return [];
 
-    var data = getBookingRows(sheet, params.date);
+    var lightweight = !!params.date && params.authUser.role !== "admin";
+    var data = getBookingRows(sheet, params.date, lightweight);
     var bookings = [];
     var targetDate = params.date;
     var targetUser = params.userId;
@@ -602,6 +611,63 @@ function getBookingsData(params) {
         });
     }
     return bookings;
+}
+
+// Student-facing summary only: never return IDs, names of participants, or reports.
+function summarizeMonthlyHighlight(users, rows, month, now) {
+    function canonical(id) {
+        var value = String(id || "").trim().toLowerCase();
+        return ({ ing: "-ing", able: "able2026", "에이블": "able2026" })[value] || value;
+    }
+    var clubs = Object.create(null);
+    users.forEach(function (u) {
+        var id = canonical(u.id);
+        if (u.status !== "Active" || u.role === "admin" || ["admin", "daily", "데일리", "test", "방과후 초등", "방과후 중등"].indexOf(id) !== -1) return;
+        clubs[id] = { name: u.name || u.id, visits: 0, participants: 0 };
+    });
+    rows.forEach(function (row) {
+        var date = formatDateSafe(row[3]);
+        var club = clubs[canonical(row[1])];
+        if (!club || date.slice(0, 7) !== month || (row[22] !== "Completed" && !String(row[9] || "").trim())) return;
+        var end = formatTimeSafe(row[5]).split(":");
+        var ended = Date.parse(date + "T" + ("0" + end[0]).slice(-2) + ":" + (end[1] || "00") + ":00+09:00");
+        if (!isFinite(ended) || ended > now) return;
+        club.visits++;
+        for (var i = 11; i <= 18; i++) {
+            var count = Number(row[i]);
+            if (isFinite(count)) club.participants += Math.max(0, count);
+        }
+    });
+    var active = Object.keys(clubs).map(function (id) { return clubs[id]; }).filter(function (club) { return club.visits > 0; });
+    active.forEach(function (club) {
+        club.score = 2 + active.filter(function (other) { return other.visits > club.visits; }).length + active.filter(function (other) { return other.participants > club.participants; }).length;
+    });
+    active.forEach(function (club) {
+        club.rank = 1 + active.filter(function (other) { return other.score < club.score; }).length;
+    });
+    return { month: month, updatedAt: new Date(now).toISOString(), clubs: active.filter(function (club) { return club.rank <= 3; }).map(function (club) {
+        return { name: club.name, rank: club.rank, visits: club.visits, participants: club.participants };
+    }).sort(function (a, b) { return a.rank - b.rank || a.name.localeCompare(b.name, "ko"); }) };
+}
+
+function getMonthlyHighlight() {
+    var now = new Date();
+    var month = Utilities.formatDate(now, TIMEZONE, "yyyy-MM");
+    var cache = CacheService.getScriptCache();
+    var key = "monthly_highlight_v2_" + month;
+    var cached = cache.get(key);
+    if (cached) return JSON.parse(cached);
+    var sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName("예약내역");
+    // Skip signature column U, which may contain large base64 images.
+    var count = sheet ? sheet.getLastRow() - 1 : 0;
+    var rows = count > 0 ? sheet.getRange(2, 1, count, 20).getValues() : [];
+    if (count > 0) {
+        var statuses = sheet.getRange(2, 23, count, 1).getValues();
+        rows.forEach(function (row, index) { row[22] = statuses[index][0]; });
+    }
+    var result = summarizeMonthlyHighlight(getSheetConfig().users, rows, month, now.getTime());
+    putCacheSafely(cache, key, result, 300);
+    return result;
 }
 
 function getBookings(params) {
@@ -716,6 +782,34 @@ function getOperatingHoursForDate(dateStr) {
     return { start: holidaySchedule ? 10 : 9, end: holidaySchedule ? 17 : 21, closed: closed, holidayName: holidayName };
 }
 
+function parseAdditionalPerformance(data) {
+    var expected = ["실적일자", "구분", "학교명", "시간대", "남자 인원", "여자 인원", "비고"];
+    if (!data.length || expected.some(function (value, i) { return String(data[0][i] || "").trim() !== value; })) throw new Error("추가 실적 시트의 A1:G1 제목을 확인해주세요.");
+    var seen = Object.create(null);
+    var result = [];
+    for (var i = 1; i < data.length; i++) {
+        var row = data[i];
+        if (row.every(function (value) { return value === "" || value === null; })) continue;
+        function invalid(message) { throw new Error("추가 실적 " + (i + 1) + "행: " + message); }
+        var date = row[0] instanceof Date ? Utilities.formatDate(row[0], TIMEZONE, "yyyy-MM-dd") : String(row[0] || "").trim();
+        var parsed = new Date(date + "T12:00:00+09:00");
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || isNaN(parsed.getTime()) || Utilities.formatDate(parsed, TIMEZONE, "yyyy-MM-dd") !== date) invalid("실적일자를 YYYY-MM-DD로 입력해주세요.");
+        var category = String(row[1] || "").trim(), school = String(row[2] || "").trim(), time = String(row[3] || "").trim();
+        if (["데일리", "학교 협조실적"].indexOf(category) < 0) invalid("구분을 선택해주세요.");
+        if (category === "학교 협조실적" && !school) invalid("학교명을 입력해주세요.");
+        if (["오전", "오후", "미구분"].indexOf(time) < 0) invalid("시간대를 선택해주세요. 모르면 미구분을 선택하세요.");
+        var counts = [row[4], row[5]].map(function (value) {
+            if (value === "" || value === null || typeof value === "undefined" || typeof value === "boolean" || !isFinite(Number(value)) || Number(value) < 0 || Math.floor(Number(value)) !== Number(value)) invalid("남녀 인원은 0 이상의 정수로 입력해주세요. 인원이 없으면 0입니다.");
+            return Number(value);
+        });
+        var key = JSON.stringify([date, category, category === "데일리" ? "" : school, time]);
+        if (seen[key]) invalid("동일 날짜·구분·학교·시간대가 중복입니다. " + seen[key] + "행과 합쳐 입력해주세요.");
+        seen[key] = i + 1;
+        result.push({ date: date, category: category, school: school, time: time, male: counts[0], female: counts[1], note: String(row[6] || ""), sourceRow: i + 1 });
+    }
+    return result;
+}
+
 function getPerformanceData(params) {
     var mode = ["week", "month", "quarter", "year"].indexOf(String(params.mode)) >= 0 ? String(params.mode) : "month";
     var basis = String(params.basis) === "completed" ? "completed" : "ended";
@@ -746,12 +840,21 @@ function getPerformanceData(params) {
         holidayResult.available = holidayResult.available && result.available;
         holidayResult.holidays = holidayResult.holidays.concat(result.holidays);
     });
-    if (!sheet) return sendResponse({ bookings: [], holidays: holidayResult.holidays, available: holidayResult.available, availableYears: [year] });
-
-    var data = sheet.getDataRange().getValues();
+    var extraSheet = ss.getSheetByName("추가 실적");
+    var allAdditional = extraSheet ? parseAdditionalPerformance(extraSheet.getRange(1, 1, Math.max(1, extraSheet.getLastRow()), 7).getValues()) : [];
+    var today = Utilities.formatDate(new Date(), TIMEZONE, "yyyy-MM-dd");
+    var additional = allAdditional.filter(function (item) {
+        if (item.date > today) return false;
+        if (mode === "week") return item.date >= weekStart && item.date <= weekEnd;
+        if (Number(item.date.slice(0, 4)) !== year) return false;
+        var m = Number(item.date.slice(5, 7));
+        return mode === "month" ? m === month : mode === "quarter" ? Math.ceil(m / 3) === quarter : true;
+    });
+    var data = sheet ? sheet.getDataRange().getValues() : [];
     var nowKey = Utilities.formatDate(new Date(), TIMEZONE, "yyyy-MM-dd HH:mm");
     var bookings = [];
     var yearSet = {};
+    allAdditional.forEach(function (item) { yearSet[Number(item.date.slice(0, 4))] = true; });
     for (var i = 1; i < data.length; i++) {
         var row = data[i];
         var userId = String(row[1] || "").trim();
@@ -788,7 +891,7 @@ function getPerformanceData(params) {
     }
     yearSet[year] = true;
     var availableYears = Object.keys(yearSet).map(function (value) { return parseInt(value); }).sort(function (a, b) { return b - a; });
-    return sendResponse({ bookings: bookings, holidays: holidayResult.holidays, available: holidayResult.available, availableYears: availableYears });
+    return sendResponse({ bookings: bookings, additional: additional, holidays: holidayResult.holidays, available: holidayResult.available, availableYears: availableYears });
 }
 
 // -----------------------------------------------------------

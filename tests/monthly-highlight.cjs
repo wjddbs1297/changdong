@@ -1,0 +1,30 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const path = require('node:path');
+const ts = require('typescript');
+const gas = {};
+vm.createContext(gas);
+vm.runInContext(fs.readFileSync(path.join(__dirname, '../GAS_FINAL_DEPLOY.js'), 'utf8'), gas);
+gas.formatDateSafe = value => value;
+gas.formatTimeSafe = value => value;
+const users = ['A','B','C','Daily','Admin','TEST','방과후 초등','Inactive','ABLE2026'].map(id => ({id,name:id,status:id==='Inactive'?'Inactive':'Active',role:id==='Admin'?'admin':'user'}));
+function row(id, count, date='2026-09-01', completed=true) {
+    const row = Array(26).fill('');
+    row[1]=id; row[3]=date; row[5]='9:00'; row[11]=count;
+    row[22]=completed?'Completed':''; row[19]='PRIVATE NAME'; row[20]='PRIVATE SIGNATURE'; row[8]='PRIVATE PHONE';
+    return row;
+}
+const rows=[row('A',3),row('A',3),row('B',7),row('C',6),row('Daily',100),row('Admin',100),row('TEST',100),row('방과후 초등',100),row('Inactive',100),row('C',100,'2026-10-01'),row('C',100,'2026-09-30'),row('C',100,'2026-09-01',false),row('able',1)];
+const now=Date.parse('2026-09-21T00:00:00Z');
+const result=gas.summarizeMonthlyHighlight(users,rows,'2026-09',now);
+assert.deepEqual(JSON.parse(JSON.stringify(result.clubs)),[{name:'A',rank:1,visits:2,participants:6},{name:'B',rank:1,visits:1,participants:7},{name:'C',rank:3,visits:1,participants:6}]);
+assert.equal(gas.summarizeMonthlyHighlight(users,[], '2026-10',now).clubs.length,0);
+assert.ok(!JSON.stringify(result).includes('PRIVATE'));
+assert.deepEqual(Object.keys(result.clubs[0]).sort(),['name','participants','rank','visits']);
+const context={exports:{}};
+vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.join(__dirname,'../src/utils/clubRanking.ts'),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,context);
+const bookings=rows.map(r=>({userId:r[1],date:r[3],endTime:r[5],reportStatus:r[22],headcount:{elemM:r[11]}}));
+const expected=context.exports.clubRankings(users,bookings,2026,9,now).filter(r=>r.rank>0 && r.rank<=3).map(r=>r.name);
+assert.deepEqual(JSON.parse(JSON.stringify(result.clubs.map(r=>r.name))),JSON.parse(JSON.stringify(expected)));
+console.log('PASS: highlight matches admin rank, ties, privacy, current month, ended/submitted only, excluded accounts, empty month.');

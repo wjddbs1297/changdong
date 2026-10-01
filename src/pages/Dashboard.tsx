@@ -46,16 +46,12 @@ export function Dashboard() {
     useEffect(() => {
         const init = async () => {
             const initialDateKey = format(initialDateRef.current, 'yyyy-MM-dd');
-            const initialYear = initialDateRef.current.getFullYear();
             try {
-                const [config, noticeData, holidayData, bookingData] = await Promise.all([
-                    dataService.getConfig(), dataService.getNotices(), dataService.getHolidays([initialYear]), dataService.getBookings(initialDateKey)
+                const [config, bookingData] = await Promise.all([
+                    dataService.getConfig(), dataService.getBookings(initialDateKey)
                 ]);
                 setRooms(config.rooms);
                 setUsers(config.users);
-                setNotices(noticeData);
-                setHolidayYears({ [initialYear]: holidayData });
-                setHolidayWarning(holidayData.available ? '' : '공휴일 정보를 불러오지 못했습니다. 일요일 운영시간만 적용됩니다.');
                 setBookings(bookingData);
                 loadedDateRef.current = initialDateKey;
                 if (config.rooms.length > 0) setSelectedRoom(config.rooms[0]);
@@ -67,10 +63,10 @@ export function Dashboard() {
             }
         };
         init();
+        dataService.getNotices().then(setNotices).catch(console.error);
     }, []);
 
     useEffect(() => {
-        if (!initialized) return;
         if (holidayYears[selectedYear]) return;
         dataService.getHolidays([selectedYear]).then(result => {
             setHolidayYears(current => ({ ...current, [selectedYear]: result }));

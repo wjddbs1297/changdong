@@ -1,0 +1,36 @@
+const fs = require('node:fs');
+const vm = require('node:vm');
+const path = require('node:path');
+const assert = require('node:assert/strict');
+const ts = require('typescript');
+const header = ['실적일자','구분','학교명','시간대','남자 인원','여자 인원','비고'];
+const row = ['2026-01-01','데일리','','오전',2,3,''];
+let sheetRows = [header, row];
+const ctx = vm.createContext({Date, Utilities:{formatDate: date => new Date(date.getTime()+9*3600000).toISOString().slice(0,10)},SpreadsheetApp:{openById:()=>({getSheetByName:name=>name==='추가 실적'?{getLastRow:()=>sheetRows.length,getRange:()=>({getValues:()=>sheetRows})}:null})}});
+vm.runInContext(fs.readFileSync(path.join(__dirname,'../GAS_FINAL_DEPLOY.js'),'utf8'),ctx);
+ctx.getSheetConfig=()=>({users:[]});
+ctx.getHolidayCalendarForYear=()=>({available:true,holidays:[{date:'2026-01-01',name:'신정'}]});
+ctx.sendResponse=data=>data;
+assert.equal(ctx.parseAdditionalPerformance(sheetRows)[0].male,2);
+assert.equal(ctx.parseAdditionalPerformance([header, Array(7).fill('')]).length,0);
+for (const [column,value] of [[0,'2026-02-30'],[1,'오류'],[3,''],[4,''],[4,-1],[4,1.2],[5,'abc']]) {
+    const bad=row.slice();bad[column]=value;
+    assert.throws(()=>ctx.parseAdditionalPerformance([header,bad]),/2행/);
+}
+assert.throws(()=>ctx.parseAdditionalPerformance([header,[...row.slice(0,1),'학교 협조실적',...row.slice(2)]]),/학교명/);
+assert.throws(()=>ctx.parseAdditionalPerformance([header,row,row]),/중복/);
+sheetRows=[header,row,['2025-12-31','학교 협조실적','학교A','미구분',5,7,''],['2099-01-01','데일리','','오후',99,99,'']];
+assert.equal(ctx.getPerformanceData({mode:'month',year:2026,month:1}).additional.length,1);
+assert.equal(ctx.getPerformanceData({mode:'month',year:2026,month:2}).additional.length,0);
+assert.equal(ctx.getPerformanceData({mode:'quarter',year:2026,quarter:1}).additional.length,1);
+assert.equal(ctx.getPerformanceData({mode:'year',year:2099}).additional.length,0);
+assert.equal(ctx.getPerformanceData({mode:'week',year:2026,weekStart:'2025-12-29',weekEnd:'2026-01-04'}).additional.length,2);
+assert.ok(ctx.getPerformanceData({mode:'year',year:2026}).availableYears.includes(2025));
+const frontend={exports:{}};
+vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.join(__dirname,'../src/utils/slotGenderTotals.ts'),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,frontend);
+const records=ctx.parseAdditionalPerformance(sheetRows.slice(0,3));
+const totals=frontend.exports.slotGenderTotals([],[],records,new Set(['2026-01-01']));
+assert.equal(totals.holidayUnclassified.male,2);
+assert.equal(totals.weekdayUnclassified.female,7);
+assert.equal(frontend.exports.GENDER_SLOTS.reduce((sum,key)=>sum+totals[key].male+totals[key].female,0),17);
+console.log('PASS: input validation, duplicate prevention, blank rows, cross-year weeks, month/quarter/year, future exclusion, additional-only years and holiday/unclassified totals.');

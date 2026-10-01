@@ -59,11 +59,12 @@ export function Layout({ children }: LayoutProps) {
                                     <User size={20} />
                                     <span className="hidden sm:inline">내 예약</span>
                                 </Link>
+                                <Link to="/club-ranking" className="text-brand-600 hover:text-brand-700 font-semibold transition-colors px-2">동아리 랭킹</Link>
                                 {user.role === 'admin' && (
                                     <>
                                         <Link to="/admin-logs" className="text-brand-600 hover:text-brand-700 font-semibold transition-colors flex items-center space-x-1 px-2"><FileText size={20} /><span className="hidden sm:inline">전체 대장</span></Link>
                                         <Link to="/admin-stats" className="text-brand-600 hover:text-brand-700 font-semibold transition-colors flex items-center space-x-1 px-2"><BarChart3 size={20} /><span className="hidden sm:inline">이용 실적</span></Link>
-                                        <Link to="/admin-ranking" className="text-brand-600 hover:text-brand-700 font-semibold transition-colors px-2">활동 랭킹</Link>
+                                        <Link to="/admin-ranking" className="text-brand-600 hover:text-brand-700 font-semibold transition-colors px-2">랭킹 관리</Link>
                                         <Link to="/admin-accounts" className="text-brand-600 hover:text-brand-700 font-semibold transition-colors px-2">계정 관리</Link>
                                     </>
                                 )}

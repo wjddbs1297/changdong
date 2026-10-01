@@ -12,6 +12,7 @@ import { AdminLogs } from './pages/AdminLogs';
 import { AdminAccounts } from './pages/AdminAccounts';
 import { AdminStats } from './pages/AdminStats';
 import { AdminRanking } from './pages/AdminRanking';
+import { MonthlyHighlightCard } from './components/MonthlyHighlightCard';
 
 // Protected Route Component
 function ProtectedRoute({ children }: { children: ReactNode }) {
@@ -75,6 +76,7 @@ function AppRoutes() {
                     <Route path="/admin-accounts" element={<ProtectedRoute><AdminAccounts /></ProtectedRoute>} />
                     <Route path="/admin-stats" element={<ProtectedRoute><AdminStats /></ProtectedRoute>} />
                     <Route path="/admin-ranking" element={<ProtectedRoute><AdminRanking /></ProtectedRoute>} />
+                    <Route path="/club-ranking" element={<ProtectedRoute><MonthlyHighlightCard /></ProtectedRoute>} />
                 </Routes>
             </AuthProvider>
         </BrowserRouter>
