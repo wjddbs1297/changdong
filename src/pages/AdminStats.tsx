@@ -7,6 +7,7 @@ import type { Booking, HolidayInfo, Room, User, HistoricalPerformance } from '..
 import { historicalInPeriod, coveredByHistorical } from '../utils/historicalPerformance';
 import { rankingClubId } from '../utils/clubRanking';
 import { bookingGenderCounts, slotGenderTotals, GENDER_SLOTS } from '../utils/slotGenderTotals';
+import { PERFORMANCE_PROGRAMS, matchesPerformanceProgram, type PerformanceProgram } from '../utils/performancePrograms';
 
 type PeriodMode = 'week' | 'month' | 'quarter' | 'year';
 type Basis = 'ended' | 'completed';
@@ -100,7 +101,10 @@ export function AdminStats() {
     const now = new Date();
     const [bookings, setBookings] = useState<Booking[]>([]);
     const [historical, setHistorical] = useState<HistoricalPerformance[]>([]);
-    const [additional, setAdditional] = useState<AdditionalPerformance[]>([]);
+    const [additionalData, setAdditional] = useState<AdditionalPerformance[]>([]);
+    const [program, setProgram] = useState<PerformanceProgram>('all');
+    const programInfo = PERFORMANCE_PROGRAMS.find(item => item.id === program);
+    const additional = useMemo(() => program === 'all' ? additionalData : [], [program, additionalData]);
     const [refreshVersion, setRefreshVersion] = useState(0);
     const [users, setUsers] = useState<User[]>([]);
     const [rooms, setRooms] = useState<Room[]>([]);
@@ -161,11 +165,15 @@ export function AdminStats() {
     const holidayDates = useMemo(() => new Set(holidays.map(item => item.date)), [holidays]);
     const holidayNames = useMemo(() => new Map(holidays.map(item => [item.date, item.name])), [holidays]);
     const roomNames = useMemo(() => new Map(rooms.map(room => [room.id, room.name])), [rooms]);
-    const periodHistory = useMemo(() => historicalInPeriod(historical, mode, year, month, quarter).filter(row => !isDaily(row.userId)), [historical, mode, year, month, quarter]);
+    const periodHistory = useMemo(() => historicalInPeriod(historical, mode, year, month, quarter).filter(row => {
+        const account = users.find(item => rankingClubId(item.id) === rankingClubId(row.userId));
+        return !isDaily(row.userId) && matchesPerformanceProgram(program, row.userId, row.sourceName, account?.name);
+    }), [historical, mode, year, month, quarter, program, users]);
 
     const rows = useMemo<StatRow[]>(() => {
         const clubUsers = users
             .filter(item => item.role !== 'admin' && item.status === 'Active' && !isDaily(item.id))
+            .filter(item => matchesPerformanceProgram(program, item.id, item.name))
             .sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id, 'ko'));
         const result: StatRow[] = clubUsers.map(item => ({
             userId: item.id, name: item.name || item.id, cells: EMPTY_CELLS(),
@@ -206,7 +214,7 @@ export function AdminStats() {
             row.participants += genderCounts.male + genderCounts.female;
         });
         return result;
-    }, [users, bookings, holidayDates, mode, year, month, quarter, selectedWeek.start, selectedWeek.end, basis, periodHistory]);
+    }, [users, bookings, holidayDates, mode, year, month, quarter, selectedWeek.start, selectedWeek.end, basis, periodHistory, program]);
 
     const totals = useMemo(() => rows.reduce((acc, row) => ({
         clubs: acc.clubs + (row.totalVisits > 0 || row.participants > 0 ? 1 : 0),
@@ -248,6 +256,12 @@ export function AdminStats() {
                         <p className="mt-2 text-sm text-gray-500">{periodLabel(mode, year, month, quarter, selectedWeek.start, selectedWeek.end)} 종료 예약을 시간대별로 집계합니다.</p>
                     </div>
                     <div className="grid min-w-0 grid-cols-2 items-end gap-3 sm:flex sm:flex-wrap [&_label]:min-w-0 [&_select]:w-full [&_select]:min-w-0 [&_select]:min-h-11">
+                        <label className="col-span-2 text-xs font-semibold text-gray-500">사업별 보기
+                            <select value={program} onChange={e => { setProgram(e.target.value as PerformanceProgram); setSelected(null); }} className="mt-1 block rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900">
+                                <option value="all">전체 실적</option>
+                                {PERFORMANCE_PROGRAMS.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
+                            </select>
+                        </label>
                         <label className="text-xs font-semibold text-gray-500">기간 단위
                             <select value={mode} onChange={e => { setMode(e.target.value as PeriodMode); setSelected(null); }} className="mt-1 block rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900">
                                 <option value="week">주별</option><option value="month">월별</option><option value="quarter">분기별</option><option value="year">연도별</option>
@@ -282,6 +296,9 @@ export function AdminStats() {
                         </label>
                     </div>
                 </div>
+                <div className="mt-4 rounded-lg bg-brand-50 px-4 py-3 text-sm text-brand-800">
+                    {programInfo ? <><p className="font-bold">{programInfo.label} 참가팀 실적</p><p className="mt-1">{programInfo.clubs.join(' · ')}</p><p className="mt-2">해당 팀의 기존 이용 실적을 모아 보여줍니다. 전체 실적에도 그대로 포함되며, 사업 합계를 전체에 다시 더하지 않습니다. 데일리·학교 협조실적은 팀 구분이 없어 이 보기에서 제외합니다.</p></> : <p>전체 실적을 유지하면서 ‘사업별 보기’로 참가팀의 이용 실적을 따로 확인할 수 있습니다. 프로그램 참가 여부에 따른 분류이며, 개별 이용 건이 해당 프로그램 활동이었다는 뜻은 아닙니다.</p>}
+                </div>
                 {holidayWarning && <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">{holidayWarning}</div>}
                 {loadError && <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{loadError}</div>}
             </section>
@@ -290,12 +307,12 @@ export function AdminStats() {
                 <div className="rounded-2xl border border-gray-100 bg-white p-5 shadow-sm"><CalendarDays className="mb-3 text-brand-600" size={22} /><div className="text-sm text-gray-500">이용 동아리</div><div className="mt-1 text-2xl font-bold">{totals.clubs}개</div></div>
                 <div className="rounded-2xl border border-gray-100 bg-white p-5 shadow-sm"><BarChart3 className="mb-3 text-brand-600" size={22} /><div className="text-sm text-gray-500">총 이용 횟수</div><div className="mt-1 text-2xl font-bold">{totals.visits}회</div></div>
                 <div className="rounded-2xl border border-gray-100 bg-white p-5 shadow-sm"><Clock3 className="mb-3 text-brand-600" size={22} /><div className="text-sm text-gray-500">총 이용 시간</div><div className="mt-1 text-2xl font-bold">{totals.hours}시간</div></div>
-                <div className="rounded-2xl border border-gray-100 bg-white p-5 shadow-sm"><CalendarDays className="mb-3 text-brand-600" size={22} /><div className="text-sm text-gray-500">실제 활동인원 (추가 실적 포함)</div><div className="mt-1 text-2xl font-bold">{totals.participants + additionalTotals.male + additionalTotals.female}명</div><div className="mt-1 text-xs text-gray-500">남 {totals.male + additionalTotals.male}명 · 여 {totals.female + additionalTotals.female}명</div></div>
+                <div className="rounded-2xl border border-gray-100 bg-white p-5 shadow-sm"><CalendarDays className="mb-3 text-brand-600" size={22} /><div className="text-sm text-gray-500">{program === 'all' ? '실제 활동인원 (추가 실적 포함)' : '참가팀 실제 활동인원'}</div><div className="mt-1 text-2xl font-bold">{totals.participants + additionalTotals.male + additionalTotals.female}명</div><div className="mt-1 text-xs text-gray-500">남 {totals.male + additionalTotals.male}명 · 여 {totals.female + additionalTotals.female}명</div></div>
             </section>
 
             <section className="min-w-0 rounded-2xl border border-gray-100 bg-white p-4 sm:p-6 shadow-sm" aria-labelledby="slot-gender-title">
                 <h2 id="slot-gender-title" className="text-lg font-bold text-gray-900">요일·시간대별 남녀 인원 합계</h2>
-                <p className="mt-2 text-sm text-gray-500">선택한 기간의 동아리와 추가 실적 연인원입니다. 같은 사람이 여러 번 활동하면 활동마다 합산합니다.</p>
+                <p className="mt-2 text-sm text-gray-500">{program === 'all' ? '선택한 기간의 동아리와 추가 실적 연인원입니다.' : `${programInfo?.label} 참가팀의 선택 기간 연인원입니다.`} 같은 사람이 여러 번 활동하면 활동마다 합산합니다.</p>
                 <p className="mt-1 text-xs text-gray-500">사이트 기록은 시작 시각 13시 이전을 오전으로 분류합니다. 일요일과 공휴일이 토요일보다 우선합니다. 미제출 일지 인원은 제외합니다.</p>
                 {periodHistory.length > 0 && <p className="mt-2 text-sm text-amber-800">1~6월 이관분은 원본 시간대 구분을 유지해 합산합니다(평일 오전 기준 14시 이전). 공휴일은 이관분과 사이트 기록을 합쳐 남녀 인원만 표시합니다.</p>}
                 {loading ? <p className="py-6 text-center text-gray-500" role="status">인원 합계를 불러오는 중...</p> : loadError ? <p className="py-4 text-red-700">자료를 불러오지 못해 합계를 표시할 수 없습니다.</p> : <div className="mt-4 overflow-x-auto">
@@ -311,13 +328,13 @@ export function AdminStats() {
                 </div>}
             </section>
 
-            <section className="rounded-2xl border border-gray-100 bg-white p-4 sm:p-6">
+            {program === 'all' && <section className="rounded-2xl border border-gray-100 bg-white p-4 sm:p-6">
                 <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-lg font-bold">추가 실적</h2><button disabled={loading} onClick={() => setRefreshVersion(value => value + 1)} className="rounded-lg border px-4 py-2 text-sm disabled:opacity-50">{loading ? '불러오는 중...' : '실적 새로고침'}</button></div>
                 <p className="mt-2 text-sm text-gray-500">‘추가 실적’ 시트 입력분은 인원 합계에만 포함합니다. 이용 횟수·시간·동아리 수·랭킹에는 포함하지 않습니다. 기존 동아리 일지에 있는 인원을 중복 입력하지 마세요.</p>
                 <p className="mt-1 text-sm text-gray-500">학교명은 학교 협조실적에만 필수입니다. 미래 날짜는 제외하며, 추가 실적은 활동일지 완료 여부와 무관하게 두 집계 기준 모두에 포함합니다.</p>
                 {!loading && !loadError && <><div className="mt-3 flex flex-wrap gap-4 text-sm">{(['데일리', '학교 협조실적'] as const).map(category => { const entries = additional.filter(item => item.category === category); return <p key={category}><strong>{category}</strong> · 남 {entries.reduce((n, r) => n + r.male, 0)}명 · 여 {entries.reduce((n, r) => n + r.female, 0)}명</p>; })}</div>
                     <details className="mt-4"><summary className="cursor-pointer text-sm font-semibold">날짜별 입력 내역 ({additional.length}건)</summary><div className="mt-2 overflow-x-auto"><table className="min-w-[650px] w-full text-sm"><thead><tr>{['날짜', '구분', '학교', '시간대', '남', '여'].map(label => <th key={label} className="p-2 text-left">{label}</th>)}</tr></thead><tbody>{additional.map(item => <tr key={item.sourceRow} className="border-t"><td className="p-2">{item.date}</td><td className="p-2">{item.category}</td><td className="p-2">{item.school || '—'}</td><td className="p-2">{item.time}</td><td className="p-2">{item.male}명</td><td className="p-2">{item.female}명</td></tr>)}</tbody></table></div></details></>}
-            </section>
+            </section>}
 
             {periodHistory.length > 0 && <section className="rounded-2xl border bg-amber-50 p-4 text-sm text-amber-950">
                 <p>합계에 2026년 1~6월 엑셀 본표 실적을 포함했습니다. 이용 시간·예약 시간대별 횟수는 원본에 없어 이관 실적을 포함하지 않습니다. 횟수 미기재 항목은 인원만 합산하며, 총 이용 횟수는 확인된 횟수입니다.</p>
