@@ -398,7 +398,8 @@ function adminResetPin(params) {
     var record = findUserRecord(params.userId);
     if (!record) return sendResponse({ message: "계정을 찾을 수 없습니다." }, false);
     if (isPinExemptRecord(record)) return sendResponse({ message: "데일리 계정은 PIN을 사용하지 않습니다." }, false);
-    try { setPinForRecord(record, String(params.newPin || ""), true); }
+    if (String(record.row[3]).trim().toLowerCase() === "admin") return sendResponse({ message: "관리자 계정은 동아리 PIN 초기화 대상이 아닙니다." }, false);
+    try { setPinForRecord(record, "0000", true, true); }
     catch (error) { return sendResponse({ message: error.message }, false); }
     clearLiveUserCache(record.row[0]);
     return sendResponse({ message: "임시 PIN으로 초기화했습니다." });
@@ -528,16 +529,33 @@ function repairImportedBookingIdentity(sheet) {
         return row[3] && row[4] !== "" && row[5] !== "" && row[6] &&
             (!String(row[0] || "").trim() || !String(row[1] || "").trim());
     }
-    if (!data.slice(1).some(needsRepair)) return data;
+    var seenIds = Object.create(null);
+    var hasDuplicate = data.slice(1).some(function (row) {
+        var id = String(row[0] || "").trim();
+        if (!id) return false;
+        if (seenIds[id]) return true;
+        seenIds[id] = true;
+        return false;
+    });
+    if (!hasDuplicate && !data.slice(1).some(needsRepair)) return data;
     var lock = LockService.getScriptLock();
     lock.waitLock(30000);
     try {
         data = sheet.getDataRange().getValues();
         var usersSheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName("Users");
         var users = usersSheet ? usersSheet.getDataRange().getValues().slice(1) : [];
+        seenIds = Object.create(null);
+        data.slice(1).forEach(function (row) {
+            var id = String(row[0] || "").trim();
+            if (id) seenIds[id] = true;
+        });
+        var visitedIds = Object.create(null);
         for (var i = 1; i < data.length; i++) {
             var row = data[i];
-            if (!needsRepair(row)) continue;
+            var originalId = String(row[0] || "").trim();
+            var duplicateId = originalId && visitedIds[originalId];
+            if (originalId) visitedIds[originalId] = true;
+            if (!needsRepair(row) && !duplicateId) continue;
             if (!String(row[1] || "").trim()) {
                 var name = String(row[2] || "").trim();
                 var matches = users.filter(function (u) {
@@ -548,8 +566,9 @@ function repairImportedBookingIdentity(sheet) {
                     sheet.getRange(i + 1, 2).setValue(row[1]);
                 }
             }
-            if (!String(row[0] || "").trim()) {
-                row[0] = "BK_IMPORT_" + Utilities.getUuid();
+            if (!originalId || duplicateId) {
+                do { row[0] = "BK_IMPORT_" + Utilities.getUuid(); } while (seenIds[row[0]]);
+                seenIds[row[0]] = true;
                 sheet.getRange(i + 1, 1).setValue(row[0]);
             }
             clearBookingDayCache(formatDateSafe(row[3]));
@@ -559,6 +578,13 @@ function repairImportedBookingIdentity(sheet) {
     } finally {
         lock.releaseLock();
     }
+}
+
+// Never let a stale/imported duplicate ID select an arbitrary reservation for writing.
+function hasAmbiguousBookingId(data, bookingId) {
+    return data.slice(1).filter(function (row) {
+        return String(row[0] || "").trim() === bookingId;
+    }).length > 1;
 }
 
 function getBookingsData(params) {
@@ -993,7 +1019,7 @@ function createBooking(params) {
         }
 
         // 4. 예약 데이터 기록
-        var newId = "BK_" + new Date().getTime();
+        var newId = "BK_" + Utilities.getUuid();
         var endTime = (startHour + duration) + ":00";
         var createdAt = Utilities.formatDate(new Date(), TIMEZONE, "yyyy-MM-dd HH:mm:ss");
 
@@ -1065,6 +1091,7 @@ function cancelBookingUnlocked(params) {
 
     var data = sheet.getDataRange().getValues();
 
+    if (hasAmbiguousBookingId(data, bookingId)) return sendResponse({ message: "예약번호가 중복되어 있습니다. 새로고침 후 내 예약 내역에서 다시 시도해주세요." }, false);
     // i=1 (헤더 제외)부터 탐색
     for (var i = 1; i < data.length; i++) {
         var rowBookingId = String(data[i][0]).trim();
@@ -1119,6 +1146,7 @@ function updateBookingUnlocked(params) {
 
     // 1. Find the booking ROW
     var data = sheet.getDataRange().getValues();
+    if (hasAmbiguousBookingId(data, bookingId)) return sendResponse({ message: "예약번호가 중복되어 있습니다. 새로고침 후 내 예약 내역에서 다시 시도해주세요." }, false);
     var rowIndex = -1;
 
     for (var i = 1; i < data.length; i++) {
@@ -1292,6 +1320,7 @@ function submitActivityLog(params) {
         var writer = params.authUser;
         var isAdmin = writer && writer.role === 'admin';
         var data = sheet.getDataRange().getValues();
+        if (hasAmbiguousBookingId(data, bookingId)) return sendResponse({ message: "예약번호가 중복되어 있습니다. 새로고침 후 활동일지를 다시 열어주세요." }, false);
 
         for (var i = 1; i < data.length; i++) {
             var row = data[i];

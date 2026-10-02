@@ -1,0 +1,28 @@
+const fs = require('node:fs');
+const vm = require('node:vm');
+const assert = require('node:assert/strict');
+const path = require('node:path');
+const row = (id, status, start) => {
+  const value = Array(26).fill('');
+  [value[0], value[1], value[2], value[3], value[4], value[5], value[6]] = [id, 'club', 'Club', '2026-09-18', start, '20:00', 'room1'];
+  value[22] = status; value[9] = status === 'Completed' ? 'saved report' : '';
+  value[20] = status === 'Completed' ? 'saved signature' : '';
+  return value;
+};
+let rows = [Array(26).fill('header'), row('same', 'Completed', '15:00'), row('same', 'Pending', '18:00'), row('', 'Pending', '10:00')];
+let writes = []; let locked = false; let counter = 0;
+const sheet = {getDataRange: () => ({getValues: () => rows.map(r => r.slice())}), getRange: (r,c) => ({setValue: v => {assert.ok(locked); rows[r-1][c-1]=v; writes.push([r,c]);}})};
+const ctx = vm.createContext({Utilities: {getUuid: () => 'uuid-'+(++counter)}, LockService: {getScriptLock: () => ({waitLock: () => {locked=true;},releaseLock: () => {locked=false;}})}, SpreadsheetApp: {openById: () => ({getSheetByName: () => null}),flush: () => {}}});
+vm.runInContext(fs.readFileSync(path.join(__dirname, '../GAS_FINAL_DEPLOY.js'),'utf8'),ctx);
+ctx.clearBookingDayCache = () => {}; ctx.formatDateSafe = x => x;
+const original = rows.map(r => r.slice());
+assert.equal(ctx.hasAmbiguousBookingId(rows, 'same'), true);
+ctx.repairImportedBookingIdentity(sheet);
+assert.equal(rows[1][0], 'same');
+assert.equal(new Set(rows.slice(1).map(r => r[0])).size, 3);
+for (let i=1;i<rows.length;i++) assert.deepEqual(rows[i].slice(1), original[i].slice(1));
+assert.deepEqual(writes, [[3,1],[4,1]]);
+assert.equal(ctx.hasAmbiguousBookingId(rows, 'same'), false);
+writes = []; ctx.repairImportedBookingIdentity(sheet); assert.equal(writes.length,0);
+assert.equal(locked,false);
+console.log('PASS: duplicate/missing ID repair, completed content preserved, unique IDs, idempotence, lock release.');
