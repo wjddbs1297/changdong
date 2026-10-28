@@ -52,12 +52,13 @@ export function Dashboard() {
                 setRooms(config.rooms);
                 setUsers(config.users);
                 if (config.rooms.length > 0) setSelectedRoom(config.rooms[0]);
+                setInitialized(true);
             } catch (error) {
                 console.error(error);
                 setBookingError(error instanceof Error ? error.message : '예약 조회에 실패했습니다.');
                 setHolidayWarning('예약 화면 일부를 불러오지 못했습니다. 잠시 후 새로고침해주세요.');
             } finally {
-                setInitialized(true);
+                setLoading(false);
             }
         };
         init();
