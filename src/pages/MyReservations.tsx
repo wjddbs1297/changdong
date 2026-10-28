@@ -149,7 +149,7 @@ export function MyReservations() {
                             </h3>
 
                             <div className="space-y-2 text-sm text-gray-600">
-                                {['daily', '데일리'].includes(booking.userId.trim().toLowerCase()) && <div className="rounded-lg bg-gray-50 p-3 break-words"><div>예약자: {booking.reserverName || '이름 미등록'}</div><div className="mt-1">연락처: {(booking.phoneNumber || '').replace(/^(010)(\d{4})(\d{4})$/, '$1-$2-$3') || '연락처 미등록'}</div></div>}
+                                {['daily', '데일리'].includes(String(booking.userId || '').trim().toLowerCase()) && <div className="rounded-lg bg-gray-50 p-3 break-words"><div>예약자: {booking.reserverName || '이름 미등록'}</div><div className="mt-1">연락처: {String(booking.phoneNumber || '').replace(/^(010)(\d{4})(\d{4})$/, '$1-$2-$3') || '연락처 미등록'}</div></div>}
                                 <div className="flex items-center space-x-2">
                                     <Calendar size={16} className="text-gray-400" />
                                     <span>{booking.date}</span>
