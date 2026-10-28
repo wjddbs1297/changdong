@@ -1,4 +1,5 @@
 import type { Booking, User, Room, Notice, ClubMember, HolidayInfo, HistoricalPerformance } from '../types';
+import { apiFetch as fetch, SessionExpiredError } from './apiTransport';
 
 export interface BookingRequest {
     userId: string;
@@ -92,7 +93,13 @@ export interface AdditionalPerformance {
 }
 
 let configCache: Config | null = null;
+let configCachedAt = 0;
 let sessionToken = sessionStorage.getItem('sessionToken') || '';
+export function clearLocalSession() {
+    sessionToken = '';
+    sessionStorage.removeItem('sessionToken');
+    configCache = null;
+}
 
 const postPayload = (data: Record<string, unknown>) => JSON.stringify({ ...data, sessionToken });
 const protectedPost = (url: string, data: Record<string, unknown>) => fetch(url, {
@@ -110,15 +117,15 @@ export class ApiDataService implements DataService {
     }
 
     async getConfig(): Promise<Config> {
-        if (configCache) return configCache;
+        if (configCache && Date.now() - configCachedAt < 60000) return configCache;
         const url = getApiUrl();
-        if (!url) return { users: [], rooms: [] };
+        if (!url) throw new Error('서버 연결 설정을 확인해주세요.');
         try {
             const response = await protectedPost(url, { method: 'GET_CONFIG' });
             const json = await response.json();
-            if (json.status === 'success') { configCache = json.data; return json.data; }
-        } catch (error) { console.error("Config Fetch Error:", error); }
-        return { users: [], rooms: [] };
+            if (json.status === 'success') { configCache = json.data; configCachedAt = Date.now(); return json.data; }
+            throw new Error(json.message || '연습실 정보를 불러오지 못했습니다.');
+        } catch (error) { throw error; }
     }
 
     async login(userId: string, pin: string): Promise<AuthResult> {
@@ -141,10 +148,11 @@ export class ApiDataService implements DataService {
             const response = await protectedPost(url, { method: 'VERIFY_SESSION' });
             const json = await response.json();
             if (json.status === 'success') return { user: json.data.user, mustChangePin: !!json.data.mustChangePin };
-        } catch { /* require a fresh login */ }
-        sessionToken = '';
-        sessionStorage.removeItem('sessionToken');
-        return null;
+            throw new Error(json.message || '로그인 상태를 확인하지 못했습니다.');
+        } catch (error) {
+            if (error instanceof SessionExpiredError) { clearLocalSession(); return null; }
+            throw error;
+        }
     }
 
     async logout(): Promise<void> {
@@ -173,34 +181,35 @@ export class ApiDataService implements DataService {
 
     async getBookings(date: string): Promise<Booking[]> {
         const url = getApiUrl();
-        if (!url) return [];
+        if (!url) throw new Error('서버 연결 설정을 확인해주세요.');
         try {
             const response = await protectedPost(url, { method: 'GET', date });
             const json = await response.json();
             if (json.status === 'success') return json.data;
-            return [];
-        } catch (error) { return []; }
+            throw new Error(json.message || '예약을 불러오지 못했습니다.');
+        } catch (error) { throw error; }
     }
 
-    async getAllBookings(): Promise<Booking[]> {
+    async getAllBookings(summary = false): Promise<Booking[]> {
         const url = getApiUrl();
-        if (!url) return [];
+        if (!url) throw new Error('서버 연결 설정을 확인해주세요.');
         try {
-            const response = await protectedPost(url, { method: 'GET' });
+            const response = await protectedPost(url, { method: 'GET', summary });
             const json = await response.json();
             if (json.status === 'success') return json.data;
-            return [];
-        } catch (error) { return []; }
+            throw new Error(json.message || '예약을 불러오지 못했습니다.');
+        } catch (error) { throw error; }
     }
 
     async getUserBookings(userId: string): Promise<Booking[]> {
         const url = getApiUrl();
-        if (!url) return [];
+        if (!url) throw new Error('서버 연결 설정을 확인해주세요.');
         try {
-            const response = await protectedPost(url, { method: 'GET', userId });
+            const response = await protectedPost(url, { method: 'GET', userId, summary: true });
             const json = await response.json();
-            return json.status === 'success' ? json.data : [];
-        } catch (error) { return []; }
+            if (json.status !== 'success') throw new Error(json.message || '내 예약을 불러오지 못했습니다.');
+            return json.data;
+        } catch (error) { throw error; }
     }
 
     async createBooking(request: BookingRequest): Promise<Booking> {

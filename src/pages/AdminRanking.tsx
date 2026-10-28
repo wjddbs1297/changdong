@@ -20,7 +20,7 @@ export function AdminRanking() {
         let cancelled = false;
         setLoading(true);
         setError('');
-        Promise.all([dataService.getConfig(), dataService.getAllBookings(), dataService.getHistoricalPerformance()]).then(([config, records, history]) => {
+        Promise.all([dataService.getConfig(), dataService.getAllBookings(true), dataService.getHistoricalPerformance()]).then(([config, records, history]) => {
             if (cancelled) return;
             setUsers(config.users);
             setBookings(records);

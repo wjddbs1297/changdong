@@ -32,6 +32,7 @@ export function AdminLogs() {
     const [rooms, setRooms] = useState<Room[]>([]);
     const [users, setUsers] = useState<User[]>([]);
     const [loading, setLoading] = useState(true);
+    const [loadError, setLoadError] = useState('');
     const [clubFilter, setClubFilter] = useState('all');
     const [monthFilter, setMonthFilter] = useState('all');
     const [pdfBookingKey, setPdfBookingKey] = useState('');
@@ -57,6 +58,7 @@ export function AdminLogs() {
                 setBookings(allData);
             } catch (e) {
                 console.error(e);
+                setLoadError(e instanceof Error ? e.message : '일지를 불러오지 못했습니다.');
             } finally {
                 setLoading(false);
             }
@@ -198,6 +200,7 @@ export function AdminLogs() {
 
     return (
         <div className="space-y-6">
+            {loadError && <div role="alert" className="rounded bg-red-50 p-4"><p>{loadError}</p><button onClick={() => window.location.reload()}>다시 불러오기</button></div>}
             <div className="min-w-0 bg-white rounded-2xl shadow-sm border border-gray-100 p-3 sm:p-6">
                 <h1 className="text-2xl font-bold text-gray-900">전체 활동일지 대장</h1>
 

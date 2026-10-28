@@ -91,7 +91,7 @@ function createSession(record) {
         user: session.user,
         mustChangePin: session.mustChangePin
     }, LIVE_USER_CACHE_SECONDS);
-    if (Math.random() < 0.05) cleanupExpiredSessions();
+    if (Math.random() < 0.05) { try { cleanupExpiredSessions(); } catch (error) { console.log('Session cleanup deferred'); } }
     return { sessionToken: token, user: session.user, mustChangePin: session.mustChangePin };
 }
 
@@ -101,8 +101,8 @@ function sessionPropertyKey(token) {
 
 function storeSession(token, session) {
     var serialized = JSON.stringify(session);
-    CacheService.getScriptCache().put("session:" + token, serialized, SESSION_SECONDS);
     PropertiesService.getScriptProperties().setProperty(sessionPropertyKey(token), serialized);
+    putCacheSafely(CacheService.getScriptCache(), "session:" + token, serialized, SESSION_SECONDS);
 }
 
 function getSession(token) {
@@ -263,11 +263,16 @@ function handleRequest(e) {
         if (method === "LOGIN") return loginWithPin(params);
 
         var session = getSession(params.sessionToken);
-        if (!session) return sendResponse({ message: "로그인이 만료되었습니다. 다시 로그인해주세요." }, false);
+        if (!session) return sendResponse({ code: "SESSION_EXPIRED", message: "로그인이 만료되었습니다. 다시 로그인해주세요." }, false);
         var liveSnapshot = getLiveUserSnapshot(session.user.id);
         if (!liveSnapshot || String(liveSnapshot.user.status || "Active") !== "Active") return sendResponse({ message: "비활성화된 계정입니다." }, false);
         session.user = liveSnapshot.user;
         session.mustChangePin = liveSnapshot.mustChangePin;
+        // Sliding two-hour inactivity window; persist at most once per five minutes.
+        if (session.expiresAt - Date.now() < (SESSION_SECONDS - 300) * 1000) {
+            session.expiresAt = Date.now() + SESSION_SECONDS * 1000;
+            storeSession(params.sessionToken, session);
+        }
         params.authUser = session.user;
         // 날짜별 대관 현황(GET)은 모든 동아리의 점유 시간을 보여줘야 한다.
         // 그 외 요청에서는 일반 사용자가 다른 userId를 가장하지 못하도록 본인 ID로 고정한다.
@@ -523,8 +528,16 @@ function getBookingRows(sheet, targetDate, lightweight) {
 
 // Excel rows may omit system IDs. Persist them before returning "My bookings".
 // Never replace an existing owner or guess between duplicate club names.
-function repairImportedBookingIdentity(sheet) {
-    var data = sheet.getDataRange().getValues();
+function readBookingRowsWithoutSignature(sheet) {
+    var count = Math.max(1, sheet.getLastRow());
+    var left = sheet.getRange(1, 1, count, 20).getValues();
+    var width = Math.min(5, Math.max(0, sheet.getLastColumn() - 21));
+    var right = width ? sheet.getRange(1, 22, count, width).getValues() : [];
+    return left.map(function (row, i) { return row.concat([''], right[i] || []); });
+}
+
+function repairImportedBookingIdentity(sheet, summary) {
+    var data = summary ? readBookingRowsWithoutSignature(sheet) : sheet.getDataRange().getValues();
     function needsRepair(row) {
         return row[3] && row[4] !== "" && row[5] !== "" && row[6] &&
             (!String(row[0] || "").trim() || !String(row[1] || "").trim());
@@ -541,7 +554,7 @@ function repairImportedBookingIdentity(sheet) {
     var lock = LockService.getScriptLock();
     lock.waitLock(30000);
     try {
-        data = sheet.getDataRange().getValues();
+        data = summary ? readBookingRowsWithoutSignature(sheet) : sheet.getDataRange().getValues();
         var usersSheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName("Users");
         var users = usersSheet ? usersSheet.getDataRange().getValues().slice(1) : [];
         seenIds = Object.create(null);
@@ -593,7 +606,7 @@ function getBookingsData(params) {
     if (!sheet) return [];
 
     var lightweight = !!params.date && params.authUser.role !== "admin";
-    var data = getBookingRows(sheet, params.date, lightweight);
+    var data = params.summary === true && !params.date ? repairImportedBookingIdentity(sheet, true) : getBookingRows(sheet, params.date, lightweight);
     var bookings = [];
     var targetDate = params.date;
     var targetUser = params.userId;
@@ -876,7 +889,7 @@ function getPerformanceData(params) {
         var m = Number(item.date.slice(5, 7));
         return mode === "month" ? m === month : mode === "quarter" ? Math.ceil(m / 3) === quarter : true;
     });
-    var data = sheet ? sheet.getDataRange().getValues() : [];
+    var data = sheet ? readBookingRowsWithoutSignature(sheet) : [];
     var nowKey = Utilities.formatDate(new Date(), TIMEZONE, "yyyy-MM-dd HH:mm");
     var bookings = [];
     var yearSet = {};
@@ -1263,7 +1276,7 @@ function getPendingActivityReports(params) {
 // 엑셀로 추가한 정기대관도 오늘 이후 예약이면 예약 ID와 Pending 상태를 자동 보완합니다.
 function collectPendingActivityReports(userId, sheet) {
     if (isDailyUserId(userId)) return [];
-    var data = repairImportedBookingIdentity(sheet);
+    var data = repairImportedBookingIdentity(sheet, true);
     var nowKey = Utilities.formatDate(new Date(), TIMEZONE, "yyyy-MM-dd HH:mm");
     var pending = [];
     for (var i = 1; i < data.length; i++) {
@@ -1307,6 +1320,12 @@ function submitActivityLog(params) {
     if (!bookingId || !userId) return sendResponse({ message: "예약 ID와 사용자 ID가 필요합니다." }, false);
     if (activityContent.length < 15) return sendResponse({ message: "주요 활동 내용을 15자 이상 입력해주세요." }, false);
     if (!participants) return sendResponse({ message: "실제 참여자를 1명 이상 입력해주세요." }, false);
+    var names = participants.split(',').map(function (name) { return name.trim(); }).filter(Boolean);
+    var counts = ['elemM','elemF','midM','midF','highM','highF','u24M','u24F'].map(function (key) { return Number(params[key]); });
+    if (counts.some(function (value) { return !isFinite(value) || value < 0 || value % 1 !== 0; }) ||
+        counts.reduce(function (a,b) { return a+b; },0) !== names.length) {
+        return sendResponse({ message: "학교급·성별 인원 합계와 참여자 수가 일치해야 합니다." }, false);
+    }
 
     var lock = LockService.getScriptLock();
     try { lock.waitLock(30000); }

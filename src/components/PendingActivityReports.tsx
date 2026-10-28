@@ -25,6 +25,7 @@ export function PendingActivityReports() {
     const [activityContent, setActivityContent] = useState('');
     const [suggestion, setSuggestion] = useState('');
     const [manualNames, setManualNames] = useState('');
+    const [manualHeadcount, setManualHeadcount] = useState({ ...EMPTY_HEADCOUNT });
     const [loading, setLoading] = useState(false);
     const [dismissed, setDismissed] = useState(false);
     const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -87,6 +88,13 @@ export function PendingActivityReports() {
             alert('실제 참여자를 1명 이상 선택하거나 입력해주세요.');
             return;
         }
+        if (selectedMembers.some(member => !['초등','중등','고등','24세 이하'].includes(member.schoolLevel) || !['남','여'].includes(member.gender))) {
+            alert('참여자의 학교급·성별을 관리자에게 확인해주세요.'); return;
+        }
+        const headcount = members.length ? reportHeadcount(selectedMembers) : manualHeadcount;
+        if (Object.values(headcount).some(n => !Number.isInteger(n) || n < 0) || Object.values(headcount).reduce((a,b) => a+b,0) !== participantNames.length) {
+            alert('학교급·성별 인원 합계가 참여자 수와 같아야 합니다.'); return;
+        }
         const canvas = canvasRef.current;
         let signature = '';
         if (canvas) {
@@ -100,12 +108,13 @@ export function PendingActivityReports() {
                 userId: user.id,
                 activityContent: activityContent.trim(),
                 suggestion: suggestion.trim(),
-                headcount: reportHeadcount(selectedMembers),
+                headcount,
                 participants: participantNames,
                 signature,
             });
             setReports(previous => previous.slice(1));
             setSelectedIds([]); setActivityContent(''); setSuggestion(''); setManualNames(''); clearSignature();
+            setManualHeadcount({ ...EMPTY_HEADCOUNT });
             alert('활동일지가 저장되었습니다.');
         } catch (error) {
             alert(error instanceof Error ? error.message : '활동일지 저장에 실패했습니다.');
@@ -144,9 +153,12 @@ export function PendingActivityReports() {
                             <div>
                                 <p className="mb-2 rounded-lg bg-amber-50 p-3 text-xs text-amber-800">Members 시트에 이 동아리의 명단이 아직 없어 이름을 직접 입력합니다.</p>
                                 <textarea rows={2} value={manualNames} onChange={e => setManualNames(e.target.value)} placeholder="홍길동, 김민지 (쉼표로 구분)" className="w-full rounded-xl border p-3" />
+                                <div className="mt-3 grid grid-cols-2 gap-3">
+                                    {(Object.keys(EMPTY_HEADCOUNT) as (keyof typeof EMPTY_HEADCOUNT)[]).map((key, index) => <label key={key} className="text-sm">{['초등 남','초등 여','중등 남','중등 여','고등 남','고등 여','24세 이하 남','24세 이하 여'][index]}<input type="number" min="0" step="1" value={manualHeadcount[key]} onChange={e => setManualHeadcount(v => ({...v, [key]: Number(e.target.value)}))} className="mt-1 w-full rounded border p-2" /></label>)}
+                                </div>
                             </div>
                         )}
-                        <p className="mt-2 text-sm font-semibold text-brand-600">선택 {members.length > 0 ? selectedMembers.length : manualNames.split(',').filter(Boolean).length}명</p>
+                        <p className="mt-2 text-sm font-semibold text-brand-600">선택 {members.length > 0 ? selectedMembers.length : manualNames.split(',').filter(name => name.trim()).length}명</p>
                     </div>
                     <div>
                         <label className="mb-2 block text-sm font-bold">건의사항 <span className="font-normal text-gray-400">(선택)</span></label>

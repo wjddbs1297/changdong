@@ -28,8 +28,9 @@ export function Dashboard() {
     const [holidayYears, setHolidayYears] = useState<Record<number, HolidayCalendarResult>>({});
     const [holidayWarning, setHolidayWarning] = useState('');
     const [initialized, setInitialized] = useState(false);
-    const initialDateRef = useRef(selectedDate);
     const loadedDateRef = useRef('');
+    const bookingRequestRef = useRef(0);
+    const [bookingError, setBookingError] = useState('');
 
     const isSun = isSunday(selectedDate);
     const selectedDateKey = format(selectedDate, 'yyyy-MM-dd');
@@ -45,18 +46,15 @@ export function Dashboard() {
 
     useEffect(() => {
         const init = async () => {
-            const initialDateKey = format(initialDateRef.current, 'yyyy-MM-dd');
+            setLoading(true);
             try {
-                const [config, bookingData] = await Promise.all([
-                    dataService.getConfig(), dataService.getBookings(initialDateKey)
-                ]);
+                const config = await dataService.getConfig();
                 setRooms(config.rooms);
                 setUsers(config.users);
-                setBookings(bookingData);
-                loadedDateRef.current = initialDateKey;
                 if (config.rooms.length > 0) setSelectedRoom(config.rooms[0]);
             } catch (error) {
                 console.error(error);
+                setBookingError(error instanceof Error ? error.message : '예약 조회에 실패했습니다.');
                 setHolidayWarning('예약 화면 일부를 불러오지 못했습니다. 잠시 후 새로고침해주세요.');
             } finally {
                 setInitialized(true);
@@ -67,7 +65,7 @@ export function Dashboard() {
     }, []);
 
     useEffect(() => {
-        if (holidayYears[selectedYear]) return;
+        if (!initialized || holidayYears[selectedYear]) return;
         dataService.getHolidays([selectedYear]).then(result => {
             setHolidayYears(current => ({ ...current, [selectedYear]: result }));
             setHolidayWarning(result.available ? '' : '공휴일 정보를 불러오지 못했습니다. 일요일 운영시간만 적용됩니다.');
@@ -79,20 +77,24 @@ export function Dashboard() {
     }, [initialized, selectedYear, holidayYears]);
 
     const loadBookings = async () => {
+        const requestId = ++bookingRequestRef.current;
         setLoading(true);
+        setBookingError('');
         try {
             const dateStr = format(selectedDate, 'yyyy-MM-dd');
             const data = await dataService.getBookings(dateStr);
+            if (requestId !== bookingRequestRef.current) return;
             setBookings(data);
             loadedDateRef.current = dateStr;
-        } catch (err) { console.error(err); }
-        finally { setLoading(false); }
+        } catch (err) { if (requestId === bookingRequestRef.current) setBookingError(err instanceof Error ? err.message : '예약 조회에 실패했습니다.'); }
+        finally { if (requestId === bookingRequestRef.current) setLoading(false); }
     };
 
     useEffect(() => {
         if (!initialized) return;
         setSelectedSlots([]);
-        if (loadedDateRef.current !== selectedDateKey) loadBookings();
+        loadBookings();
+        return () => { bookingRequestRef.current++; };
     }, [initialized, selectedDateKey]);
 
     useEffect(() => {
@@ -107,6 +109,7 @@ export function Dashboard() {
     }, [user, userPhoneNumber]);
 
     const handleSlotClick = (hour: number) => {
+        if (bookingError || loading || loadedDateRef.current !== selectedDateKey) return;
         if (!holidayYearLoaded) return;
         const booking = getSlotBooking(hour);
         if (booking) {
@@ -148,6 +151,7 @@ export function Dashboard() {
     };
 
     const handleBooking = async () => {
+        if (bookingError || loading || loadedDateRef.current !== selectedDateKey) return;
         if (selectedSlots.length === 0 || !user || !selectedRoom) return;
         if (!holidayYearLoaded) { alert('공휴일 정보를 확인하고 있습니다. 잠시 후 다시 시도해주세요.'); return; }
         if (isClosedHoliday) { alert(`${selectedHoliday?.name || '명절 연휴'}은 휴관일이라 예약할 수 없습니다.`); return; }
@@ -204,6 +208,7 @@ export function Dashboard() {
     };
 
     const getSlotBooking = (hour: number) => bookings.find(b => {
+        if (b.date !== selectedDateKey) return false;
         if (b.roomId !== selectedRoom?.id) return false;
         const start = parseInt(b.startTime.toString().split(':')[0]);
         const end = parseInt(b.endTime.toString().split(':')[0]);
@@ -212,6 +217,7 @@ export function Dashboard() {
     const getUserName = (userId: string) => users.find(u => u.id === userId)?.name || bookings.find(b => b.userId === userId)?.userName || userId;
 
     if (rooms.length === 0 || !selectedRoom) {
+        if (bookingError) return <div role="alert" className="p-8 text-center"><p>{bookingError}</p><button onClick={() => window.location.reload()}>다시 불러오기</button></div>;
         return <div className="p-8 text-center text-gray-500">연습실 정보를 불러오는 중...</div>;
     }
 
@@ -221,6 +227,7 @@ export function Dashboard() {
 
     return (
         <div className="space-y-6">
+            {bookingError && <div role="alert" className="rounded border border-red-200 bg-red-50 p-4"><p>{bookingError}</p><button onClick={loadBookings} className="underline">예약 다시 불러오기</button></div>}
             {notices.length > 0 && (
                 <div className="bg-brand-50 border border-brand-100 rounded-lg p-3 flex items-center overflow-hidden relative">
                     <span className="bg-brand-600 text-white text-xs font-bold px-2 py-1 rounded-md mr-3 whitespace-nowrap z-10 shadow-sm">공지</span>
@@ -325,7 +332,7 @@ export function Dashboard() {
                         const isToday = format(selectedDate, 'yyyy-MM-dd') === format(now, 'yyyy-MM-dd');
                         const isPast = isToday && hour < now.getHours();
                         const isAdmin = user?.role === 'admin';
-                        const isDisabled = loading || ((booked || isPast) && !isAdmin);
+                        const isDisabled = loading || !!bookingError || loadedDateRef.current !== selectedDateKey || ((booked || isPast) && !isAdmin);
                         return (
                             <button key={hour} disabled={isDisabled} onClick={() => handleSlotClick(hour)}
                                 className={`relative h-14 sm:h-16 rounded-lg sm:rounded-xl border-2 flex flex-col items-center justify-center transition-all p-0.5 ${isDisabled ? 'bg-gray-100 border-transparent text-gray-300 cursor-not-allowed' : selected ? 'bg-brand-50 border-brand-500 text-brand-700 shadow-md transform scale-105' : booked ? 'bg-white border-brand-200 hover:bg-brand-50 cursor-pointer' : 'bg-white border-gray-200 hover:border-brand-300 hover:bg-brand-50/50 text-gray-700'}`}>

@@ -9,6 +9,7 @@ export function MyReservations() {
     const [bookings, setBookings] = useState<Booking[]>([]);
     const [rooms, setRooms] = useState<Room[]>([]);
     const [loading, setLoading] = useState(true);
+    const [loadError, setLoadError] = useState('');
     const [editingBooking, setEditingBooking] = useState<Booking | null>(null);
     const [submitting, setSubmitting] = useState(false);
 
@@ -27,6 +28,7 @@ export function MyReservations() {
     const loadData = async () => {
         if (!user) return;
         setLoading(true);
+        setLoadError('');
         try {
             const [b, config] = await Promise.all([
                 dataService.getUserBookings(user.id),
@@ -45,6 +47,7 @@ export function MyReservations() {
             setRooms(config.rooms);
         } catch (e) {
             console.error(e);
+            setLoadError(e instanceof Error ? e.message : '예약을 불러오지 못했습니다.');
         } finally {
             setLoading(false);
         }
@@ -104,6 +107,7 @@ export function MyReservations() {
     };
 
     if (loading) return <div className="text-center py-10">Loading...</div>;
+    if (loadError) return <div role="alert" className="p-8 text-center"><p>{loadError}</p><button onClick={loadData}>다시 불러오기</button></div>;
 
     return (
         <div className="space-y-6">
